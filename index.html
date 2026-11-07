@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="referrer" content="no-referrer">
+<title>Gym</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  /* ---- Colori: tema scuro, accento blu, verde per le serie fatte ---- */
+  :root{
+    --sfondo:#0f1115; --card:#1a1d23; --campo:#262a32; --bordo:#2a2e36; --barra:#14171c;
+    --testo:#eef1f5; --tenue:#9aa3af; --spento:#6b7280;
+    --blu:#2563eb; --blu-chiaro:#60a5fa; --blu-testo:#93c5fd; --blu-fondo:#1e3a5f;
+    --verde:#16a34a; --verde-fondo:#12301f; --verde-campo:#1b4430;
+    --rosso:#f87171;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--sfondo);color:var(--testo)}
+  body{font-family:Roboto,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:16px;line-height:1.4;
+    padding-bottom:calc(72px + env(safe-area-inset-bottom))}
+  body.con-timer{padding-bottom:calc(136px + env(safe-area-inset-bottom))}
+  button,input,textarea,select{font:inherit;color:inherit}
+  main{max-width:560px;margin:0 auto;padding:0 12px}
+  h1{margin:0;font-size:24px;font-weight:500}
+  h2{margin:0;font-size:17px;font-weight:500}
+
+  .ic{width:1em;height:1em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-0.15em;flex:none}
+
+  .top{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:16px 4px 10px;
+    position:sticky;top:0;background:var(--sfondo);z-index:5}
+  .pila{display:flex;flex-direction:column;gap:10px}
+  .card{background:var(--card);border-radius:14px;padding:12px}
+  .tenue{color:var(--tenue);font-size:13px}
+  .etichetta{color:var(--tenue);font-size:12px;margin:8px 4px 0}
+  .fila{display:flex;justify-content:space-between;align-items:center;gap:8px}
+  .vuoto-msg{color:var(--tenue);text-align:center;padding:32px 12px}
+
+  .btn{background:var(--blu);color:#fff;border:none;border-radius:12px;min-height:48px;font-size:16px;font-weight:500;padding:0 18px;cursor:pointer}
+  .btn.verde{background:var(--verde)}
+  .btn2{background:#232731;color:#cfe0ff;border:none;border-radius:12px;min-height:48px;font-size:15px;padding:0 14px;cursor:pointer}
+  .btn2.pericolo{color:var(--rosso)}
+  .largo{width:100%}
+  .icona{background:none;border:none;color:var(--tenue);min-width:48px;min-height:48px;font-size:24px;display:inline-flex;align-items:center;justify-content:center;border-radius:12px;cursor:pointer}
+  .riga-btn{display:flex;gap:8px}
+  .riga-btn>*{flex:1}
+
+  .modello{width:100%;text-align:left;border:none;color:inherit;cursor:pointer;min-height:64px}
+  .modello .ic{font-size:24px;color:var(--blu-chiaro)}
+  .in-corso{border:1.5px solid var(--blu)}
+
+  /* ---- Sessione ---- */
+  .es-titolo{font-size:17px;font-weight:500;color:var(--blu-testo)}
+  .tag{display:inline-block;background:var(--blu-fondo);color:#bcd7ff;border-radius:6px;font-size:11px;padding:2px 7px;margin-right:4px}
+  .indicazione{font-size:13px;color:var(--tenue);margin:4px 0 0;white-space:pre-wrap}
+  .serie{display:grid;gap:6px;align-items:center;padding:6px 4px;border-radius:10px;transition:background .3s}
+  .serie.c-peso_rip{grid-template-columns:44px minmax(0,1fr) 62px 52px 46px 48px}
+  .serie.c-rip{grid-template-columns:44px minmax(0,1fr) 62px 46px 48px}
+  .serie.c-durata,.serie.c-cardio{grid-template-columns:44px minmax(0,1fr) 72px 46px 48px}
+  .serie.c-peso_durata{grid-template-columns:44px minmax(0,1fr) 58px 62px 46px 48px}
+  .serie.intest{color:#8b93a0;font-size:11px;padding:0 4px}
+  .serie.intest span{text-align:center}
+  .serie.intest span:nth-child(-n+2){text-align:left}
+  .num{background:var(--campo);border:none;border-radius:8px;text-align:center;padding:10px 0;font-size:18px;font-weight:500;width:100%;min-height:44px}
+  .num::placeholder{color:var(--spento);font-weight:400}
+  .serie:not(.fatta) .num{color:#aab2bd}
+  .num:focus{outline:2px solid var(--blu);color:var(--testo)}
+  .num.rpe{font-size:15px}
+  .lab-serie{background:none;border:none;color:var(--testo);font-size:13px;min-height:44px;padding:0;text-align:left;cursor:pointer}
+  .lab-serie b{font-weight:500;font-size:15px}
+  .lab-serie.risc{color:#fbbf24}
+  .lab-serie.ced{color:var(--rosso)}
+  .ultima{color:var(--tenue);font-size:12px;overflow:hidden}
+  .spunta{width:48px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;
+    border:2px solid var(--blu);color:var(--blu-chiaro);background:none;cursor:pointer;transition:background .3s,border-color .3s}
+  .fatta{background:var(--verde-fondo)}
+  .fatta .num{background:var(--verde-campo);color:#d7f5e3}
+  .fatta .spunta{background:var(--verde);border-color:var(--verde);color:#fff}
+  .durata-cella{display:flex;gap:4px;align-items:center}
+  .avvia{background:var(--blu-fondo);border:none;color:#cfe0ff;border-radius:8px;min-width:30px;min-height:44px;font-size:16px;padding:0;cursor:pointer}
+
+  details.riab{margin:10px 4px 0;border-top:1px solid var(--bordo);padding-top:4px}
+  details.riab summary{list-style:none;display:flex;justify-content:space-between;align-items:center;min-height:44px;font-size:14px;font-weight:500;cursor:pointer}
+  details.riab summary::-webkit-details-marker{display:none}
+  details.riab[open] summary .ic{transform:rotate(180deg)}
+  .riab-riga{display:grid;grid-template-columns:84px 60px minmax(0,1fr);gap:8px;align-items:center;margin-bottom:8px}
+  .testo{background:var(--campo);border:none;border-radius:8px;padding:11px 10px;font-size:14px;width:100%;min-height:44px}
+  .testo::placeholder{color:var(--spento)}
+  textarea.testo{resize:vertical;min-height:60px}
+
+  /* ---- Timer di recupero (visibile in tutte le schermate) ---- */
+  #timer{position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));z-index:20;padding:0 12px 8px}
+  #timer .dentro{max-width:536px;margin:0 auto;background:var(--blu-fondo);border-radius:14px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px 6px 14px}
+  #timer.finito .dentro{background:var(--verde)}
+  #timer .tempo{font-size:28px;font-weight:500;font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
+  #timer .btn-t{background:#26456f;border:none;color:#fff;border-radius:10px;min-width:52px;min-height:48px;font-size:15px;cursor:pointer}
+
+  /* ---- Barra in basso ---- */
+  #barra{position:fixed;left:0;right:0;bottom:0;display:flex;border-top:1px solid #262a32;background:var(--barra);z-index:20;padding-bottom:env(safe-area-inset-bottom)}
+  #barra button{flex:1;background:none;border:none;color:#8b93a0;font-size:12px;padding:8px 0 8px;min-height:64px;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
+  #barra .ic{font-size:24px}
+  #barra .attiva{color:var(--blu-chiaro)}
+
+  /* ---- Foglio dal basso (menu, scelte, conferme) ---- */
+  #velo{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:40;display:flex;align-items:flex-end;justify-content:center}
+  #velo[hidden]{display:none}
+  #foglio{background:var(--card);width:100%;max-width:560px;border-radius:18px 18px 0 0;padding:16px 14px calc(16px + env(safe-area-inset-bottom));max-height:88vh;overflow:auto}
+  #foglio h2{margin-bottom:10px}
+  .voce{display:flex;align-items:center;gap:12px;width:100%;background:none;border:none;text-align:left;min-height:52px;font-size:16px;padding:0 6px;border-radius:10px;cursor:pointer}
+  .voce:active{background:var(--campo)}
+  .voce .ic{font-size:22px;color:var(--tenue)}
+  .scelte{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
+  .scelta{background:var(--campo);border:none;border-radius:10px;min-height:44px;padding:0 14px;cursor:pointer}
+  .scelta.si{background:var(--blu);color:#fff}
+  .campo-modulo{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+  .campo-modulo label{font-size:13px;color:var(--tenue)}
+
+  /* ---- Avviso con «Annulla» ---- */
+  #avviso{position:fixed;left:12px;right:12px;bottom:calc(140px + env(safe-area-inset-bottom));z-index:50;display:flex;justify-content:center}
+  #avviso[hidden]{display:none}
+  #avviso .dentro{background:#323844;border-radius:12px;padding:6px 6px 6px 14px;display:flex;align-items:center;gap:12px;max-width:536px;width:100%;justify-content:space-between}
+  #avviso button{background:none;border:none;color:var(--blu-chiaro);font-weight:500;min-height:44px;padding:0 12px;cursor:pointer}
+
+  .settimana{display:flex;justify-content:space-between;text-align:center;font-size:12px;color:var(--tenue)}
+  .giorno{width:32px;height:32px;border-radius:50%;margin:4px auto 0;line-height:32px;color:var(--testo)}
+  .giorno.si{background:var(--verde);color:#fff}
+  .giorno.oggi{border:2px solid var(--blu);line-height:28px}
+  .stato-sync{color:var(--tenue);font-size:13px;text-align:center;padding:12px 0}
+  .errore{color:var(--rosso)}
+  .riepilogo{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
+  .riepilogo b{display:block;font-size:24px;font-weight:500}
+</style>
+</head>
+<body>
+<main id="schermo"></main>
+
+<div id="timer" hidden>
+  <div class="dentro">
+    <span class="tenue" style="color:#bcd7ff">Recupero</span>
+    <span class="tempo" id="timer-tempo">0:00</span>
+    <span style="display:flex;gap:6px">
+      <button class="btn-t" data-azione="timer-meno">−15</button>
+      <button class="btn-t" data-azione="timer-piu">+15</button>
+      <button class="btn-t" data-azione="timer-stop">Salta</button>
+    </span>
+  </div>
+</div>
+
+<nav id="barra">
+  <button data-vai="oggi"><span data-ic="barbell"></span>Oggi</button>
+  <button data-vai="storico"><span data-ic="history"></span>Storico</button>
+  <button data-vai="esercizi"><span data-ic="list-search"></span>Esercizi</button>
+  <button data-vai="test"><span data-ic="ruler-measure"></span>Test</button>
+</nav>
+
+<div id="velo" hidden><div id="foglio"></div></div>
+<div id="avviso" hidden><div class="dentro"><span id="avviso-testo"></span><button id="avviso-azione">Annulla</button></div></div>
+
+<script src="app.js"></script>
+</body>
+</html>

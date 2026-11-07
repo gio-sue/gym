@@ -1,0 +1,96 @@
+# Gym
+
+App personale per registrare gli allenamenti. Si installa sul telefono Android dalla schermata Home, funziona anche senza rete e salva i dati in un Google Sheet.
+
+Questa guida spiega, passo per passo, le tre cose che puoi fare solo tu. Servono una volta sola.
+
+---
+
+## Passo 1 — Il ponte nel foglio Google (Apps Script)
+
+Il «ponte» è un piccolo programma che vive dentro il foglio e riceve i dati dal telefono.
+
+1. Dal computer apri il foglio **«App allenamento – Dati»**.
+2. Menu **Estensioni → Apps Script**. Si apre una nuova scheda con un editor.
+3. A sinistra c'è il file `Codice.gs` (o `Code.gs`). Cancella tutto quello che c'è dentro.
+4. Apri il file `apps-script/Code.gs` di questa cartella, copia tutto il testo e incollalo nell'editor.
+5. Premi l'icona del dischetto (**Salva progetto**).
+
+### Il token (la tua chiave segreta)
+
+Il token è una parola d'ordine che solo il telefono e il ponte conoscono. **Non scriverlo mai in chat, in un file o in un messaggio.**
+
+Consiglio: sei o sette parole a caso, unite da trattini, per esempio sul modello `parola-parola-parola-parola-parola-parola` (non usare questo esempio, inventane una tua). È lunga, quindi sicura, ma facile da scrivere sul telefono.
+
+1. Nell'editor di Apps Script, a sinistra, clicca l'ingranaggio **Impostazioni progetto**.
+2. In fondo, **Proprietà script → Aggiungi proprietà script**.
+3. Proprietà: `GYM_TOKEN`. Valore: il tuo token. **Salva proprietà script**.
+
+### Pubblicazione
+
+1. In alto a destra: **Esegui il deployment → Nuovo deployment**.
+2. Accanto a «Seleziona tipo» clicca l'ingranaggio e scegli **App web**.
+3. Descrizione: `Gym`. **Esegui come: Io**. **Chi ha accesso: Chiunque**.
+   (Non è pericoloso: senza il token il ponte risponde solo «non autorizzato».)
+4. **Esegui il deployment**. Google chiede di autorizzare l'accesso al foglio: scegli il tuo account e conferma. Se compare «Google non ha verificato questa app», clicca **Avanzate → Vai a … (non sicuro)**: l'app è tua, il messaggio compare sempre per gli script personali.
+5. Copia l'**URL dell'app web** (finisce con `/exec`). Ti servirà al passo 3. Non è un segreto grave, ma non pubblicarlo.
+
+> Se in futuro ti mando un `Code.gs` nuovo: incollalo, salva, poi **Esegui il deployment → Gestisci deployment → matita (Modifica) → Versione: Nuova versione → Esegui il deployment**. Così l'indirizzo resta lo stesso.
+
+---
+
+## Passo 2 — Mettere l'app online (GitHub Pages, gratis)
+
+### Creare l'account GitHub
+
+1. Vai su **github.com** e clicca **Sign up**.
+2. Inserisci email, una password e un nome utente (per esempio il tuo nome senza spazi). Il nome utente comparirà nell'indirizzo dell'app.
+3. Conferma l'email con il codice che ti arriva.
+
+### Creare il repository e caricare i file
+
+1. In alto a destra **+ → New repository**.
+2. Repository name: `gym`. Lascia **Public** (GitHub Pages gratuito lo richiede). **Create repository**.
+3. Nella pagina che si apre, clicca **uploading an existing file**.
+4. Trascina dentro **solo questi** file e cartelle:
+   - `index.html`
+   - `app.js`
+   - `sw.js`
+   - `manifest.webmanifest`
+   - la cartella `icons`
+   - la cartella `apps-script`
+   - `README.md`
+5. In fondo clicca **Commit changes**.
+
+**Non caricare** `BRIEF.md` né la cartella `mockup`: contengono informazioni personali sulla riabilitazione, e il repository è pubblico. Non caricare mai copie di backup (`gym-backup-….json`) o export di Strong (`.csv`).
+
+### Accendere GitHub Pages
+
+1. Nel repository: **Settings → Pages** (menu a sinistra).
+2. Source: **Deploy from a branch**. Branch: **main**, cartella **/ (root)**. **Save**.
+3. Dopo uno o due minuti, in alto nella stessa pagina compare l'indirizzo: `https://TUONOME.github.io/gym/`.
+
+---
+
+## Passo 3 — Installare l'app sul telefono
+
+1. Sul telefono apri **Chrome** e vai all'indirizzo `https://TUONOME.github.io/gym/`.
+2. Menu **⋮ → Aggiungi a schermata Home** (o **Installa app**). Ora «Gym» ha la sua icona.
+3. Apri Gym dalla Home. In **Oggi** tocca l'ingranaggio in alto a destra (**Impostazioni**).
+4. Incolla l'**indirizzo del ponte** (quello che finisce con `/exec`) e scrivi il **token**. **Salva**, poi **Prova**: deve comparire «Connessione riuscita».
+5. Torna in **Oggi**: dopo pochi secondi compaiono i modelli del foglio.
+
+Il token resta solo nel telefono. Se cancelli i dati di Chrome o reinstalli l'app, va riscritto.
+
+---
+
+## Come funziona la sincronizzazione
+
+- Ogni tocco viene salvato subito nel telefono. Puoi chiudere l'app o restare senza batteria: alla riapertura la sessione è come l'hai lasciata.
+- Le modifiche vanno in una **coda** e partono verso il foglio appena c'è rete: all'apertura dell'app, quando torna la connessione e ogni due minuti.
+- In fondo a **Oggi** vedi lo stato: «Sincronizzato · 0 in coda» vuol dire che il foglio è aggiornato.
+- Nel foglio non si cancella mai nulla: una riga eliminata resta con `eliminato = sì`.
+
+## Aggiornamenti dell'app
+
+Quando ricevi file nuovi, ricaricali su GitHub (stessa procedura, sovrascrivendo). Sul telefono l'app si aggiorna da sola: la versione nuova compare alla **seconda** apertura.
