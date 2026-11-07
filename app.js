@@ -568,7 +568,8 @@ function disegnaSerie(es, serie, s) {
   }
   celle += campoNum(s, 'rpe', 'rpe');
   celle += `<button class="spunta" data-azione="spunta" data-serie="${esc(s.id)}" aria-label="Serie fatta">${ic('check')}</button>`;
-  return `<div class="serie c-${esc(tipo)} ${s.fatta === SI ? 'fatta' : ''}" data-riga-serie="${esc(s.id)}">${celle}</div>`;
+  return `<div class="scorri"><div class="scorri-fondo">${ic('trash')}${ic('trash')}</div>
+    <div class="serie c-${esc(tipo)} ${s.fatta === SI ? 'fatta' : ''}" data-riga-serie="${esc(s.id)}">${celle}</div></div>`;
 }
 
 function intestazioneSerie(tipo) {
@@ -924,12 +925,7 @@ const AZIONI = {
     await salva(...lista.map(r => ['Serie', r]));
     chiudiFoglio(); disegna();
   },
-  'serie-elimina': async el => {
-    const s = riga('Serie', el.dataset.serie);
-    s.eliminato = SI; await salva(['Serie', s]);
-    chiudiFoglio(); disegna();
-    mostraAvviso('Serie eliminata', async () => { s.eliminato = NO; await salva(['Serie', s]); });
-  },
+  'serie-elimina': el => { chiudiFoglio(); return eliminaSerie(el.dataset.serie); },
   'aggiungi-serie': async el => {
     const lista = serieDi(el.dataset.se);
     const ultima = lista[lista.length - 1];
@@ -1019,6 +1015,61 @@ const AZIONI = {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   },
 };
+
+async function eliminaSerie(id) {
+  const s = riga('Serie', id);
+  s.eliminato = SI; await salva(['Serie', s]);
+  disegna();
+  mostraAvviso('Serie eliminata', async () => { s.eliminato = NO; await salva(['Serie', s]); });
+}
+
+/* Trascinamento di una serie verso destra o sinistra: oltre il 40% della larghezza si elimina. */
+let trascina = null, ultimoTrascinamento = 0;
+document.addEventListener('pointerdown', e => {
+  const r = e.target.closest('.scorri > .serie');
+  if (!r || e.button > 0) return;
+  trascina = { r, x0: e.clientX, y0: e.clientY, dx: 0, attivo: false, oltre: false, pid: e.pointerId };
+});
+document.addEventListener('pointermove', e => {
+  const t = trascina;
+  if (!t || e.pointerId !== t.pid) return;
+  const dx = e.clientX - t.x0, dy = e.clientY - t.y0;
+  if (!t.attivo) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) { trascina = null; return; } // sta scorrendo la pagina
+    if (Math.abs(dx) < 12) return;
+    t.attivo = true;
+    try { t.r.setPointerCapture(e.pointerId); } catch (err) { /* non indispensabile */ }
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    t.r.parentNode.classList.add('in-trascinamento');
+  }
+  t.dx = dx;
+  t.r.style.transform = `translateX(${dx}px)`;
+  const oltre = Math.abs(dx) > t.r.offsetWidth * 0.4;
+  if (oltre !== t.oltre && navigator.vibrate) navigator.vibrate(15); // avvisa quando si supera la soglia
+  t.oltre = oltre;
+  t.r.parentNode.classList.toggle('oltre', oltre);
+});
+function fineTrascina() {
+  const t = trascina;
+  trascina = null;
+  if (!t || !t.attivo) return;
+  ultimoTrascinamento = Date.now();
+  const largo = t.r.offsetWidth;
+  t.r.style.transition = 'transform .18s ease-out';
+  if (t.oltre) {
+    t.r.style.transform = `translateX(${Math.sign(t.dx) * largo}px)`;
+    setTimeout(() => eliminaSerie(t.r.dataset.rigaSerie), 180);
+  } else {
+    t.r.style.transform = '';
+    setTimeout(() => { t.r.style.transition = ''; t.r.parentNode.classList.remove('in-trascinamento', 'oltre'); }, 200);
+  }
+}
+document.addEventListener('pointerup', fineTrascina);
+document.addEventListener('pointercancel', fineTrascina);
+// Dopo un trascinamento il «clic» finale non deve spuntare la serie né aprire il menu.
+document.addEventListener('click', e => {
+  if (Date.now() - ultimoTrascinamento < 350) { e.stopPropagation(); e.preventDefault(); }
+}, true);
 
 document.addEventListener('click', async e => {
   sbloccaAudio();
