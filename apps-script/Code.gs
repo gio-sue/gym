@@ -19,7 +19,7 @@ var SCHEDE = ['Esercizi', 'Modelli', 'ModelliEsercizi', 'ModelliSerie', 'Session
 // Colonne che contengono numeri veri (tutte le altre sono testo, formato @).
 var COLONNE_NUMERICHE = ['recupero_s', 'ordine', 'posizione', 'peso_kg', 'rip', 'durata_s',
   'rpe', 'rpe_previsto', 'ginocchio_pienezza', 'ginocchio_dolore', 'malleolo_dolore',
-  'achille_dolore', 'valore', 'dolore'];
+  'achille_dolore', 'valore', 'dolore', 'sedute_settimana'];
 
 // In «Impostazioni» la chiave è «chiave» e il valore resta testo.
 function chiaveDi(nomeScheda) {

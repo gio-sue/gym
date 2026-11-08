@@ -75,6 +75,15 @@
   .coppia-tit{font-size:12px;color:#bcd7ff;padding:2px 8px}
   /* Nome dell'esercizio: si tiene premuto per ordinare (niente selezione del testo) */
   .es-titolo{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;cursor:pointer}
+  .legenda{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;margin:4px 0 6px}
+  h2 .tenue{font-weight:400}
+  /* Calendario dello Storico */
+  .calendario{display:grid;grid-template-columns:repeat(7,1fr);gap:4px 0;text-align:center;font-size:12px;margin-top:8px}
+  .calendario .giorno{width:36px;height:36px;line-height:36px;margin:2px auto;padding:0;border:none;background:none;color:var(--testo);font-size:14px;border-radius:50%}
+  .calendario button.giorno{cursor:pointer}
+  .calendario .giorno.si{background:var(--verde);color:#fff}
+  .calendario .giorno.oggi{border:2px solid var(--blu);line-height:32px}
+  .calendario .giorno.scelto{outline:2px solid #fff;outline-offset:1px}
   /* Test */
   .valori-test{display:flex;gap:18px;margin-top:6px}
   .valori-test b{font-size:22px;font-weight:500}

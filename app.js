@@ -12,12 +12,14 @@
 
 const SI = 'sì', NO = 'no';
 // Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
-const VERSIONE_APP = 8;
+const VERSIONE_APP = 10;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
   Esercizi: ['id', 'nome', 'nome_strong', 'tipo', 'attrezzo', 'gruppo', 'area', 'recupero_s', 'nota', 'origine', 'archiviato', 'aggiornato_il', 'eliminato'],
-  Modelli: ['id', 'nome', 'cartella', 'ordine', 'nota', 'aggiornato_il', 'eliminato'],
+  // sedute_settimana (aggiunta l'08/11/2026, in fondo a destra): quante volte a settimana è previsto il modello.
+  // Se nel foglio la colonna non c'è ancora, il ponte la ignora senza errori.
+  Modelli: ['id', 'nome', 'cartella', 'ordine', 'nota', 'aggiornato_il', 'eliminato', 'sedute_settimana'],
   ModelliEsercizi: ['id', 'modello_id', 'posizione', 'esercizio_id', 'superserie_id', 'recupero_s', 'nota', 'aggiornato_il', 'eliminato'],
   ModelliSerie: ['id', 'modello_esercizio_id', 'posizione', 'tipo', 'lato', 'peso_kg', 'rip', 'durata_s', 'rpe_previsto', 'aggiornato_il', 'eliminato'],
   Sessioni: ['id', 'titolo', 'modello_id', 'inizio', 'fine', 'nota', 'aggiornato_il', 'eliminato'],
@@ -330,11 +332,14 @@ async function sincronizza({ completo = false } = {}) {
 
     // 2) Lettura delle novità. Una volta al giorno si rilegge tutto, per sicurezza.
     const oggi = ora().slice(0, 10);
-    const tutto = completo || !meta.cursore || meta.ultimoCompleto !== oggi;
+    // Se nel foglio manca una colonna nuova, si rilegge tutto finché non compare (così ci si accorge subito).
+    const mancaQualcosa = Object.keys(meta.colonneMancanti || {}).length > 0;
+    const tutto = completo || mancaQualcosa || !meta.cursore || meta.ultimoCompleto !== oggi;
     let dal = '';
     if (!tutto) dal = ora(new Date(dataDa(meta.cursore).getTime() - 3600 * 1000)); // un'ora di margine
     const dati = await chiamaPonte({ azione: 'pull', dal, schede: SCHEDE });
-    const cambiate = await unisci(dati.schede || {});
+    const { cambiate, daRiinviare } = await unisci(dati.schede || {});
+    if (daRiinviare.length) await salvaLista(daRiinviare); // colonna appena aggiunta nel foglio: si mandano i valori del telefono
     await salvaMeta('cursore', dati.adesso);
     if (tutto) await salvaMeta('ultimoCompleto', oggi);
     await salvaMeta('ultimaLettura', ora());
@@ -352,18 +357,32 @@ async function sincronizza({ completo = false } = {}) {
   }
 }
 
-/** Unisce le righe arrivate dal foglio: vince la più recente (aggiornato_il). */
+/** Unisce le righe arrivate dal foglio: vince la più recente (aggiornato_il).
+ *  Se nel foglio manca una colonna che l'app conosce, per quella colonna resta il valore del telefono;
+ *  quando la colonna compare, i valori del telefono vengono rimandati al foglio. */
 async function unisci(schede) {
   const operazioni = [];
+  const daRiinviare = [];
   let cambiate = 0;
   const inAttesa = new Set((await tutti('coda')).map(e => e.k)); // modifiche locali non ancora inviate
+  const mancantiPrima = meta.colonneMancanti || {};
+  const mancanti = {};
   Object.keys(schede).forEach(scheda => {
     if (!D[scheda]) return;
+    const intest = schede[scheda].intestazioni || COLONNE[scheda];
+    const manca = COLONNE[scheda].filter(c => !intest.includes(c));
+    if (manca.length) mancanti[scheda] = manca;
+    const appenaAggiunte = (mancantiPrima[scheda] || []).filter(c => intest.includes(c));
     (schede[scheda].righe || []).forEach(arrivata => {
       if (!arrivata.id) return;
       if (inAttesa.has(scheda + '|' + arrivata.id)) return; // la versione del telefono partirà al prossimo invio
       const r = soloSchema(scheda, arrivata);
       const locale = D[scheda].get(r.id);
+      if (locale) {
+        manca.forEach(c => { r[c] = locale[c] ?? ''; });
+        const daRecuperare = appenaAggiunte.filter(c => r[c] === '' && (locale[c] ?? '') !== '');
+        if (daRecuperare.length) { daRecuperare.forEach(c => { r[c] = locale[c]; }); daRiinviare.push([scheda, r]); }
+      }
       if (locale && String(r.aggiornato_il) < String(locale.aggiornato_il)) return; // la nostra è più nuova
       if (locale && COLONNE[scheda].every(c => String(locale[c] ?? '') === String(r[c] ?? ''))) return; // identica
       D[scheda].set(r.id, r);
@@ -373,7 +392,8 @@ async function unisci(schede) {
   });
   if (cambiate) versioneDati++;
   await scriviIn(operazioni);
-  return cambiate;
+  await salvaMeta('colonneMancanti', mancanti);
+  return { cambiate, daRiinviare };
 }
 
 function testoStatoSync() {
@@ -633,9 +653,9 @@ window.addEventListener('popstate', e => {
 const SCHERMATE = {
   oggi: disegnaOggi, sessione: disegnaSessione, storico: disegnaStorico, esercizi: disegnaArchivio,
   esercizio: disegnaFormEsercizio, modello: disegnaModello, test: disegnaTest, impostazioni: disegnaImpostazioni,
-  'test-nuovo': disegnaFormTest, 'test-andamento': disegnaAndamentoTest,
+  'test-nuovo': disegnaFormTest, 'test-andamento': disegnaAndamentoTest, 'esercizio-andamento': disegnaAndamentoEsercizio,
 };
-const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi', 'test-nuovo': 'test', 'test-andamento': 'test' };
+const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi', 'test-nuovo': 'test', 'test-andamento': 'test', 'esercizio-andamento': 'esercizi' };
 const MODULI = ['esercizio', 'test-nuovo']; // schermate con un modulo non ancora salvato: non si ridisegnano da sole
 
 function disegna() {
@@ -813,19 +833,63 @@ function aggiornaCronometro() {
 
 /* ---------- Storico ---------- */
 function lunedi(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x; }
+function sessioniFinite() {
+  return vivi('Sessioni').filter(s => s.fine).sort((a, b) => String(b.inizio).localeCompare(String(a.inizio)));
+}
+function chiaveGiorno(d) { return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+
+/* Calendario di un mese: i giorni con sessioni sono pieni (verdi), oggi ha il bordo blu. */
+function disegnaCalendario(sessioni) {
+  const mese = S.meseStorico || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  const giorni = new Map();
+  sessioni.forEach(s => { const k = String(s.inizio).slice(0, 10); giorni.set(k, (giorni.get(k) || 0) + 1); });
+  const oggi = chiaveGiorno(new Date());
+  const primo = new Date(mese.getFullYear(), mese.getMonth(), 1);
+  const nelMese = new Date(mese.getFullYear(), mese.getMonth() + 1, 0).getDate();
+  const vuoti = (primo.getDay() + 6) % 7; // lunedì = prima colonna
+  const titolo = primo.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
+  const quante = [...giorni.entries()].filter(([k]) => k.startsWith(chiaveGiorno(primo).slice(0, 7))).reduce((t, [, n]) => t + n, 0);
+  let html = `<div class="card"><div class="fila"><button class="icona" data-azione="mese" data-valore="-1" aria-label="Mese precedente">${ic('arrow-left')}</button>
+    <span style="text-align:center"><span style="display:block;font-size:16px;font-weight:500;text-transform:capitalize">${titolo}</span><span class="tenue">${quante} ${quante === 1 ? 'seduta' : 'sedute'}</span></span>
+    <button class="icona" data-azione="mese" data-valore="1" aria-label="Mese successivo" style="transform:scaleX(-1)">${ic('arrow-left')}</button></div>
+    <div class="calendario">${['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map(n => `<span class="tenue">${n}</span>`).join('')}`;
+  for (let i = 0; i < vuoti; i++) html += '<span></span>';
+  for (let g = 1; g <= nelMese; g++) {
+    const k = chiaveGiorno(new Date(mese.getFullYear(), mese.getMonth(), g));
+    const classi = ['giorno', giorni.has(k) ? 'si' : '', k === oggi ? 'oggi' : '', k === S.giornoStorico ? 'scelto' : ''].join(' ');
+    html += giorni.has(k)
+      ? `<button class="${classi}" data-azione="giorno-storico" data-valore="${k}">${g}</button>`
+      : `<span class="${classi}">${g}</span>`;
+  }
+  return html + `</div></div>`;
+}
+
+function cardSessione(s) {
+  const d = dataDa(s.inizio);
+  const r = riepilogoSessione(s);
+  const elenco = r.nomi.slice(0, 3).join(' · ') + (r.nomi.length > 3 ? ` +${r.nomi.length - 3}` : '');
+  return `<button class="card modello" data-azione="apri-sessione" data-id="${esc(s.id)}">
+    <span class="fila"><span style="font-size:16px;font-weight:500">${esc(s.titolo)}</span><span class="tenue">${fmtGiorno(d)}</span></span>
+    <span class="tenue" style="display:block;margin-top:4px">${fmtMinuti(r.durata)} · ${r.fatte} serie${r.volume ? ' · ' + fmtKg(r.volume) : ''}</span>
+    ${elenco ? `<span style="display:block;font-size:13px;margin-top:6px;color:#cbd2dc">${esc(elenco)}</span>` : ''}</button>`;
+}
+
 function disegnaStorico() {
-  const sessioni = vivi('Sessioni').filter(s => s.fine).sort((a, b) => String(b.inizio).localeCompare(String(a.inizio)));
-  const oggi = new Date(); const lun = lunedi(oggi);
-  const giorniFatti = new Set(sessioni.map(s => String(s.inizio).slice(0, 10)));
-  const nomi = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'];
-  let html = testata('Storico') + `<div class="pila"><div class="card settimana">`;
-  nomi.forEach((n, i) => {
-    const g = new Date(lun); g.setDate(lun.getDate() + i);
-    const chiave = ora(g).slice(0, 10);
-    const classi = (giorniFatti.has(chiave) ? 'si ' : '') + (g.toDateString() === oggi.toDateString() ? 'oggi' : '');
-    html += `<div>${n}<div class="giorno ${classi}">${g.getDate()}</div></div>`;
-  });
-  html += `</div>`;
+  const sessioni = sessioniFinite();
+  const vista = S.vistaStorico || 'sessioni';
+  let html = testata('Storico') + `<div class="pila">
+    <div class="scelte" style="margin:0">
+      <button class="scelta ${vista === 'sessioni' ? 'si' : ''}" data-azione="vista-storico" data-valore="sessioni">Sessioni</button>
+      <button class="scelta ${vista === 'statistiche' ? 'si' : ''}" data-azione="vista-storico" data-valore="statistiche">Statistiche</button></div>`;
+  if (vista === 'statistiche') return html + disegnaStatistiche(sessioni) + `</div>`;
+  html += disegnaCalendario(sessioni);
+  if (S.giornoStorico) {
+    const delGiorno = sessioni.filter(s => String(s.inizio).startsWith(S.giornoStorico));
+    html += `<div class="fila etichetta"><span>${fmtGiorno(giornoDa(S.giornoStorico))}</span>
+      <button class="scelta" data-azione="giorno-storico" data-valore="${S.giornoStorico}">Mostra tutte</button></div>`;
+    return html + delGiorno.map(cardSessione).join('') + `</div>`;
+  }
+  const lun = lunedi(new Date());
   // Con tanto storico (per esempio dopo l'importazione da Strong) si mostrano le ultime 100.
   const mostrate = sessioni.slice(0, S.storicoTutte ? sessioni.length : 100);
   const perSettimana = new Map();
@@ -841,16 +905,204 @@ function disegnaStorico() {
       const quante = perSettimana.get(lunS.getTime());
       html += `<div class="etichetta">${nomeGruppo} · ${quante} ${quante === 1 ? 'seduta' : 'sedute'}</div>`;
     }
-    const r = riepilogoSessione(s);
-    const elenco = r.nomi.slice(0, 3).join(' · ') + (r.nomi.length > 3 ? ` +${r.nomi.length - 3}` : '');
-    html += `<button class="card modello" data-azione="apri-sessione" data-id="${esc(s.id)}">
-      <span class="fila"><span style="font-size:16px;font-weight:500">${esc(s.titolo)}</span><span class="tenue">${fmtGiorno(d)}</span></span>
-      <span class="tenue" style="display:block;margin-top:4px">${fmtMinuti(r.durata)} · ${r.fatte} serie${r.volume ? ' · ' + fmtKg(r.volume) : ''}</span>
-      ${elenco ? `<span style="display:block;font-size:13px;margin-top:6px;color:#cbd2dc">${esc(elenco)}</span>` : ''}</button>`;
+    html += cardSessione(s);
   });
   if (sessioni.length > mostrate.length) html += `<button class="btn2 largo" data-azione="storico-tutte">Mostra tutte (${sessioni.length})</button>`;
   if (!sessioni.length) html += `<div class="vuoto-msg">Le sessioni finite compariranno qui.</div>`;
-  return html + `<p class="tenue" style="text-align:center">Grafici e statistiche arrivano nella fase 4.</p></div>`;
+  return html + `</div>`;
+}
+
+/* ---------- Statistiche ---------- */
+// Grafico a barre semplice (SVG): valori [{ etichetta, v }].
+function graficoBarre(valori, formato = v => fmtNum(v)) {
+  const L = 320, A = 150, su = 18, giu = 22, sx = 6, dx = 6;
+  const max = Math.max(1, ...valori.map(x => x.v));
+  const larg = (L - sx - dx) / valori.length;
+  let svg = `<svg viewBox="0 0 ${L} ${A}" width="100%" role="img" aria-label="Grafico a barre">`;
+  valori.forEach((x, i) => {
+    const h = x.v / max * (A - su - giu), xx = sx + i * larg + larg * 0.18, w = larg * 0.64, y = A - giu - h;
+    svg += `<rect x="${xx.toFixed(1)}" y="${y.toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(h, x.v ? 2 : 0).toFixed(1)}" rx="3" fill="#60a5fa"/>`;
+    if (x.v) svg += `<text x="${(xx + w / 2).toFixed(1)}" y="${(y - 4).toFixed(1)}" text-anchor="middle" fill="#cbd2dc" font-size="11">${formato(x.v)}</text>`;
+    if (x.etichetta) svg += `<text x="${(xx + w / 2).toFixed(1)}" y="${A - 6}" text-anchor="middle" fill="#9aa3af" font-size="10">${esc(x.etichetta)}</text>`;
+  });
+  return svg + '</svg>';
+}
+
+function disegnaStatistiche(sessioni) {
+  if (!sessioni.length) return `<div class="vuoto-msg">Le statistiche compariranno dopo le prime sessioni.</div>`;
+  const lunOggi = lunedi(new Date());
+  const settimana = s => Math.round((lunOggi - lunedi(dataDa(s.inizio))) / (7 * 864e5)); // 0 = questa settimana
+  let html = '';
+
+  // 1) Sedute a settimana, ultime 12 settimane.
+  const perSett = Array(12).fill(0);
+  sessioni.forEach(s => { const k = settimana(s); if (k >= 0 && k < 12) perSett[k]++; });
+  const barre = perSett.map((v, k) => {
+    const l = new Date(lunOggi); l.setDate(l.getDate() - 7 * k);
+    return { v, etichetta: k % 3 === 0 ? `${l.getDate()}/${l.getMonth() + 1}` : '' };
+  }).reverse();
+  const media = perSett.slice(1, 9).reduce((a, b) => a + b, 0) / 8;
+  html += `<div class="card"><h2>Sedute a settimana</h2>
+    <p class="tenue" style="margin:2px 0 6px">Ultime 12 settimane · media delle 8 settimane precedenti: ${fmtNum(Math.round(media * 10) / 10)}</p>
+    ${graficoBarre(barre)}</div>`;
+
+  // 2) Aderenza ai modelli: sedute fatte su sedute previste (colonna «sedute_settimana» del modello).
+  //    Si guardano la settimana in corso e le 4 settimane complete prima. Solo numeri, nessun colore di giudizio.
+  const conFrequenza = vivi('Modelli').filter(m => num(m.sedute_settimana) > 0).sort(perNome);
+  if (conFrequenza.length) {
+    const righeAd = conFrequenza.map(m => {
+      const prev = num(m.sedute_settimana);
+      const fatte = sessioni.filter(s => s.modello_id === m.id);
+      const ora0 = fatte.filter(s => settimana(s) === 0).length;
+      const ult4 = fatte.filter(s => settimana(s) >= 1 && settimana(s) <= 4).length;
+      return `<tr><td>${esc(m.nome)}</td><td>${ora0} di ${prev}</td><td>${ult4} di ${prev * 4} · ${Math.round(ult4 / (prev * 4) * 100)}%</td></tr>`;
+    }).join('');
+    html += `<div class="card"><h2>Aderenza ai modelli</h2><p class="tenue" style="margin:2px 0 6px">Sedute fatte su previste</p>
+      <table class="tabella"><tr><th>Modello</th><th>questa sett.</th><th>4 sett. prima</th></tr>${righeAd}</table></div>`;
+  } else {
+    html += `<div class="card"><h2>Aderenza ai modelli</h2><p class="tenue" style="margin:6px 0 0">Per vederla, scrivi le «sedute previste a settimana» nei modelli (Esercizi → Modelli).</p></div>`;
+  }
+
+  // 3) Sedute per modello, ultime 4 settimane.
+  const perModello = new Map();
+  sessioni.filter(s => settimana(s) < 4 && settimana(s) >= 0).forEach(s => {
+    const m = s.modello_id && riga('Modelli', s.modello_id);
+    const nome = m ? m.nome : s.modello_id ? 'Modello eliminato' : 'Senza modello';
+    perModello.set(nome, (perModello.get(nome) || 0) + 1);
+  });
+  html += `<div class="card"><h2>Sedute per modello</h2><p class="tenue" style="margin:2px 0 6px">Ultime 4 settimane</p>
+    <table class="tabella">${[...perModello.entries()].sort((a, b) => b[1] - a[1]).map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v}</td></tr>`).join('') || '<tr><td>Nessuna seduta</td><td></td></tr>'}</table></div>`;
+
+  // 4) Volume settimanale per gruppo muscolare (kg × ripetizioni delle serie fatte, senza riscaldamento).
+  const vol = new Map(); // gruppo -> [sett0, sett1, sett2, sett3]
+  sessioni.forEach(s => {
+    const k = settimana(s);
+    if (k < 0 || k > 3) return;
+    eserciziDi(s.id).forEach(se => {
+      const es = riga('Esercizi', se.esercizio_id);
+      const gruppo = (es && es.gruppo) || 'senza gruppo';
+      serieDi(se.id).forEach(x => {
+        if (x.fatta !== SI || x.tipo === 'riscaldamento') return;
+        const p = num(x.peso_kg), r = num(x.rip);
+        if (isNaN(p) || isNaN(r) || !p || !r) return;
+        if (!vol.has(gruppo)) vol.set(gruppo, [0, 0, 0, 0]);
+        vol.get(gruppo)[k] += p * r;
+      });
+    });
+  });
+  const kg = v => v ? Math.round(v).toLocaleString('it-IT') : '–';
+  html += `<div class="card"><h2>Volume per gruppo</h2><p class="tenue" style="margin:2px 0 6px">kg × ripetizioni delle serie fatte</p>
+    <table class="tabella"><tr><th>Gruppo</th><th>questa sett.</th><th>scorsa</th><th>media 4 sett.</th></tr>
+    ${[...vol.entries()].sort((a, b) => b[1].reduce((x, y) => x + y) - a[1].reduce((x, y) => x + y)).map(([g, v]) =>
+      `<tr><td>${esc(g)}</td><td>${kg(v[0])}</td><td>${kg(v[1])}</td><td>${kg(v.reduce((a, b) => a + b) / 4)}</td></tr>`).join('') || '<tr><td colspan="4">Nessuna serie con peso nelle ultime 4 settimane</td></tr>'}
+    </table></div>`;
+  html += `<p class="tenue" style="text-align:center">Record e grafici di ogni esercizio: scheda Esercizi, tocca un esercizio.</p>`;
+  return html;
+}
+
+/* ---------- Andamento di un esercizio ---------- */
+const COLORE_SERIE = { dx: '#60a5fa', sx: '#c4b5fd', entrambi: '#60a5fa' };
+const COLORE_RIAB = ['#5eead4', '#f9a8d4']; // pienezza/malleolo e dolore/Achille: colori neutri, nessun semaforo
+const PERIODI = { '3m': ['3 mesi', 92], '1a': ['1 anno', 366], tutto: ['tutto', 0] };
+
+/** Per ogni sessione con l'esercizio: data, misure per lato (solo serie fatte, senza riscaldamento) e valori di riabilitazione. */
+function storicoEsercizio(esercizioId) {
+  const out = [];
+  (indice('SessioniEsercizi', 'esercizio_id').get(esercizioId) || []).forEach(se => {
+    const sess = riga('Sessioni', se.sessione_id);
+    if (!sess || sess.eliminato === SI) return;
+    const lati = {};
+    serieDi(se.id).forEach(x => {
+      if (x.fatta !== SI || x.tipo === 'riscaldamento') return;
+      const lato = x.lato === 'dx' || x.lato === 'sx' ? x.lato : 'entrambi';
+      const m = lati[lato] = lati[lato] || { maxPeso: null, ripMaxPeso: null, ripTot: 0, maxRip: null, volume: 0, maxDurata: null, durTot: 0, serie: 0 };
+      const p = num(x.peso_kg), r = num(x.rip), d = num(x.durata_s);
+      m.serie++;
+      if (!isNaN(p) && (m.maxPeso === null || p > m.maxPeso || (p === m.maxPeso && r > m.ripMaxPeso))) { m.maxPeso = p; m.ripMaxPeso = isNaN(r) ? null : r; }
+      if (!isNaN(r)) { m.ripTot += r; m.maxRip = Math.max(m.maxRip ?? 0, r); }
+      if (!isNaN(p) && !isNaN(r)) m.volume += p * r;
+      if (!isNaN(d)) { m.durTot += d; m.maxDurata = Math.max(m.maxDurata ?? 0, d); }
+    });
+    out.push({ sess, se, t: dataDa(sess.inizio), lati });
+  });
+  return out.filter(x => x.t).sort((a, b) => a.t - b.t);
+}
+
+function disegnaAndamentoEsercizio() {
+  const es = riga('Esercizi', S.esercizioVisto);
+  if (!es) { S.schermata = 'esercizi'; return disegnaArchivio(); }
+  const tipo = tipoDi(es);
+  const periodo = S.periodo || '1a';
+  const giorni = PERIODI[periodo][1];
+  const tutto = storicoEsercizio(es.id);
+  const dati = giorni ? tutto.filter(x => (Date.now() - x.t) / 864e5 <= giorni) : tutto;
+  const latiPresenti = ['dx', 'sx', 'entrambi'].filter(l => dati.some(x => x.lati[l]));
+  const nomeLato = { dx: 'destro', sx: 'sinistro', entrambi: latiPresenti.length > 1 ? 'entrambi' : '' };
+  // «entrambi» con dx/sx presenti usa un terzo colore, per non confonderlo con il destro.
+  const colore = l => l === 'entrambi' && latiPresenti.length > 1 ? '#e5e7eb' : COLORE_SERIE[l];
+
+  let html = testata(esc(es.nome), 'indietro', `<button class="icona" data-azione="apri-esercizio" data-id="${esc(es.id)}" aria-label="Modifica esercizio">${ic('edit')}</button>`) + `<div class="pila">
+    <div class="tenue">${esc(TIPI_ES[tipo])}${es.gruppo ? ' · ' + esc(es.gruppo) : ''}${RIAB[es.area] ? ` <span class="tag">${esc(es.area)}</span>` : ''} · ${tutto.length} ${tutto.length === 1 ? 'sessione' : 'sessioni'}</div>
+    <div class="scelte" style="margin:0">${Object.entries(PERIODI).map(([k, [n]]) =>
+      `<button class="scelta ${periodo === k ? 'si' : ''}" data-azione="periodo" data-valore="${k}">${n}</button>`).join('')}</div>`;
+  if (!tutto.length) return html + `<div class="vuoto-msg">Questo esercizio non è ancora in nessuna sessione.</div></div>`;
+
+  const legenda = latiPresenti.length > 1 ? `<div class="legenda">${latiPresenti.map(l => `<span style="color:${colore(l)}">● ${nomeLato[l]}</span>`).join('')}</div>` : '';
+  const grafico = (titolo, unita, valore) => {
+    const serie = latiPresenti.map(l => ({ colore: colore(l), punti: dati.filter(x => x.lati[l] && valore(x.lati[l]) != null).map(x => ({ t: x.t, y: valore(x.lati[l]) })) }));
+    const punti = serie.reduce((t, s) => t + s.punti.length, 0);
+    if (!punti) return '';
+    return `<div class="card"><h2>${titolo} <span class="tenue">(${unita})</span></h2>${legenda}
+      ${punti > 1 ? graficoLinee(serie, unita) : '<p class="tenue">Il grafico compare dalla seconda sessione.</p>'}</div>`;
+  };
+  const graficiPerTipo = {
+    peso_rip: [['Carico massimo', 'kg', m => m.maxPeso], ['Ripetizioni totali', 'rip', m => m.ripTot || null], ['Volume', 'kg', m => m.volume || null]],
+    rip: [['Ripetizioni totali', 'rip', m => m.ripTot || null], ['Massimo in una serie', 'rip', m => m.maxRip]],
+    durata: [['Durata massima', 's', m => m.maxDurata], ['Durata totale', 's', m => m.durTot || null]],
+    peso_durata: [['Carico massimo', 'kg', m => m.maxPeso], ['Durata massima', 's', m => m.maxDurata]],
+    cardio: [['Durata totale', 'min', m => m.durTot ? Math.round(m.durTot / 6) / 10 : null]],
+  }[tipo];
+  graficiPerTipo.forEach(([titolo, unita, f], i) => {
+    html += grafico(titolo, unita, f);
+    if (i === 0) html += graficoRiabilitazione(es, dati); // pienezza e dolore accanto ai carichi
+  });
+  if (!dati.length) html += `<div class="vuoto-msg">Nessuna sessione in questo periodo.</div>`;
+  html += disegnaRecord(tipo, tutto, latiPresenti.length ? latiPresenti : ['entrambi'], nomeLato);
+  return html + `</div>`;
+}
+
+function graficoRiabilitazione(es, dati) {
+  const riab = RIAB[es.area];
+  if (!riab) return '';
+  const serie = riab.campi.map(([c], i) => ({ colore: COLORE_RIAB[i], punti: dati.filter(x => x.se[c] !== '' && !isNaN(num(x.se[c]))).map(x => ({ t: x.t, y: num(x.se[c]) })) }));
+  const punti = serie.reduce((t, s) => t + s.punti.length, 0);
+  if (!punti) return `<div class="card"><h2>${riab.titolo.replace('Riabilitazione', 'Sensazioni')}</h2><p class="tenue">Nessun valore registrato in questo periodo.</p></div>`;
+  return `<div class="card"><h2>${riab.titolo.replace('Riabilitazione', 'Sensazioni')} <span class="tenue">(0-10)</span></h2>
+    <div class="legenda">${riab.campi.map(([, n], i) => `<span style="color:${COLORE_RIAB[i]}">● ${n.toLowerCase()}</span>`).join('')}</div>
+    ${punti > 1 ? graficoLinee(serie, '0-10') : '<p class="tenue">Il grafico compare dal secondo valore.</p>'}</div>`;
+}
+
+/* Record: il valore più alto mai registrato (su tutto lo storico), con la data. Solo numeri, nessun giudizio. */
+function disegnaRecord(tipo, tutto, lati, nomeLato) {
+  const migliore = (lato, f) => {
+    let top = null;
+    tutto.forEach(x => { const m = x.lati[lato]; const v = m && f(m); if (v != null && v !== 0 && (!top || v > top.v)) top = { v, m, t: x.t }; });
+    return top;
+  };
+  const voci = {
+    peso_rip: [['Carico massimo', m => m.maxPeso, r => `${fmtNum(r.v)} kg${r.m.ripMaxPeso != null ? ' × ' + r.m.ripMaxPeso : ''}`],
+      ['Più ripetizioni in una serie', m => m.maxRip, r => `${r.v}`], ['Volume in una sessione', m => m.volume, r => fmtKg(r.v)]],
+    rip: [['Più ripetizioni in una serie', m => m.maxRip, r => `${r.v}`], ['Ripetizioni in una sessione', m => m.ripTot, r => `${r.v}`]],
+    durata: [['Durata massima', m => m.maxDurata, r => `${r.v} s`], ['Durata totale in una sessione', m => m.durTot, r => `${r.v} s`]],
+    peso_durata: [['Carico massimo', m => m.maxPeso, r => `${fmtNum(r.v)} kg`], ['Durata massima', m => m.maxDurata, r => `${r.v} s`]],
+    cardio: [['Durata più lunga', m => m.durTot, r => fmtMinuti(r.v)]],
+  }[tipo];
+  let righe = '';
+  voci.forEach(([nome, f, testo]) => lati.forEach(l => {
+    const r = migliore(l, f);
+    if (r) righe += `<tr><td>${nome}${nomeLato[l] ? ` <span style="color:${l === 'entrambi' ? '#e5e7eb' : COLORE_SERIE[l]}">${nomeLato[l]}</span>` : ''}</td><td>${testo(r)}</td><td class="tenue">${r.t.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: '2-digit' })}</td></tr>`;
+  }));
+  return righe ? `<div class="card"><h2>Record</h2><table class="tabella" style="margin-top:4px">${righe}</table></div>` : '';
 }
 
 /* ---------- Esercizi e modelli (archivio) ---------- */
@@ -886,7 +1138,7 @@ function disegnaArchivio() {
 function righeArchivio() {
   const lista = elencoEsercizi(S.ricercaArchivio, S.mostraArchiviati);
   if (!lista.length) return `<div class="vuoto-msg">Nessun esercizio trovato.</div>`;
-  return lista.map(e => `<button class="card modello" data-azione="apri-esercizio" data-id="${esc(e.id)}">
+  return lista.map(e => `<button class="card modello" data-azione="vedi-esercizio" data-id="${esc(e.id)}">
     <span style="display:block;font-size:16px">${esc(e.nome)}${e.archiviato === SI ? ' <span class="tenue">(archiviato)</span>' : ''}</span>
     <span class="tenue">${esc(TIPI_ES[e.tipo] || e.tipo)}${e.gruppo ? ' · ' + esc(e.gruppo) : ''}${e.attrezzo ? ' · ' + esc(e.attrezzo) : ''}${RIAB[e.area] ? ` <span class="tag">${esc(e.area)}</span>` : ''}</span></button>`).join('');
 }
@@ -901,7 +1153,7 @@ function disegnaFormEsercizio() {
   const scelte = (campo, opzioni) => `<div class="scelte">${Object.entries(opzioni).map(([v, t]) =>
     `<button class="scelta ${b[campo] === v ? 'si' : ''}" data-azione="bozza-scelta" data-campo="${campo}" data-valore="${v}">${t}</button>`).join('')}</div>`;
   const tutti = vivi('Esercizi');
-  return testata(b.id ? 'Esercizio' : 'Nuovo esercizio', 'torna-esercizi') + `<div class="pila"><div class="card">
+  return testata(b.id ? 'Modifica esercizio' : 'Nuovo esercizio', 'indietro') + `<div class="pila"><div class="card">
     <div class="campo-modulo"><label for="f-nome">Nome</label><input class="testo" id="f-nome" value="${esc(b.nome)}"></div>
     <div class="tenue">Tipo</div>${scelte('tipo', TIPI_ES)}
     ${b.id && b.tipoOriginale && b.tipo !== b.tipoOriginale ? '<p class="tenue">Cambiare il tipo non modifica le serie già registrate.</p>' : ''}
@@ -952,7 +1204,12 @@ function disegnaModello() {
     <div class="card">
       <div class="campo-modulo"><label for="m-nome">Nome</label><input class="testo" id="m-nome" data-mod-campo="nome" value="${esc(m.nome)}"></div>
       <div class="campo-modulo"><label for="m-cartella">Cartella</label><input class="testo" id="m-cartella" list="l-cartelle" data-mod-campo="cartella" value="${esc(m.cartella)}"></div>
-      <div class="campo-modulo"><label for="m-ordine">Ordine nella cartella</label><input class="testo" id="m-ordine" inputmode="numeric" data-mod-campo="ordine" value="${esc(fmtNum(m.ordine))}"></div>
+      <div class="riga-btn">
+        <div class="campo-modulo"><label for="m-ordine">Ordine nella cartella</label><input class="testo" id="m-ordine" inputmode="numeric" data-mod-campo="ordine" value="${esc(fmtNum(m.ordine))}"></div>
+        <div class="campo-modulo"><label for="m-sedute">Sedute previste a settimana</label><input class="testo" id="m-sedute" inputmode="numeric" placeholder="nessuna" data-mod-campo="sedute_settimana" value="${esc(fmtNum(m.sedute_settimana))}"></div>
+      </div>
+      ${((meta.colonneMancanti || {}).Modelli || []).includes('sedute_settimana')
+        ? `<p class="tenue" style="margin:0 0 10px">Nel foglio manca ancora la colonna «sedute_settimana» (scheda Modelli): il numero resta sul telefono e parte da solo appena la aggiungi.</p>` : ''}
       <div class="campo-modulo" style="margin:0"><label for="m-nota">Nota</label><textarea class="testo" id="m-nota" data-mod-campo="nota">${esc(m.nota)}</textarea></div>
       ${datalist('l-cartelle', vivi('Modelli').map(x => x.cartella))}
     </div>`;
@@ -1025,7 +1282,8 @@ function graficoLinee(serie, unita) {
   serie.forEach(s => {
     const punti = s.punti.slice().sort((a, b) => a.t - b.t);
     if (punti.length > 1) svg += `<polyline fill="none" stroke="${s.colore}" stroke-width="2.5" stroke-linejoin="round" points="${punti.map(p => `${X(+p.t).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ')}"/>`;
-    punti.forEach(p => { svg += `<circle cx="${X(+p.t).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.5" fill="${s.colore}"/>`; });
+    // Con tanti punti si disegna solo la linea (e l'ultimo punto), altrimenti i pallini si accavallano.
+    (punti.length > 30 ? punti.slice(-1) : punti).forEach(p => { svg += `<circle cx="${X(+p.t).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.5" fill="${s.colore}"/>`; });
   });
   return svg + '</svg>';
 }
@@ -1724,8 +1982,9 @@ const AZIONI = {
       ${comp ? `<button class="voce" data-azione="inverti-coppia" ${attr}>${ic('swap')} Inverti A e B</button>
         <button class="voce" data-azione="scollega" ${attr}>${ic('unlink')} Scollega la superserie</button>`
         : `<button class="voce" data-azione="collega-scegli" ${attr}>${ic('link')} Collega in superserie</button>`}
-      <p class="tenue">Per spostare gli esercizi: tieni premuto sul nome e trascina.</p>
-      <button class="voce" data-azione="rimuovi-es" ${attr} style="color:var(--rosso)">${ic('trash')} Rimuovi</button>`);
+      <button class="voce" data-azione="vedi-esercizio" data-id="${esc(r.esercizio_id)}">${ic('history')} Andamento e record</button>
+      <button class="voce" data-azione="rimuovi-es" ${attr} style="color:var(--rosso)">${ic('trash')} Rimuovi</button>
+      <p class="tenue">Per spostare gli esercizi: tieni premuto sul nome e trascina.</p>`);
   },
   'inverti-coppia': async el => {
     await invertiCoppia(el.dataset.scheda, el.dataset.id);
@@ -1792,6 +2051,17 @@ const AZIONI = {
 
   /* --- Archivio: esercizi e modelli --- */
   'vista-archivio': el => { S.vistaArchivio = el.dataset.valore; disegna(); },
+  'vedi-esercizio': el => { chiudiFoglio(); vai('esercizio-andamento', { esercizioVisto: el.dataset.id }); },
+  'periodo': el => { S.periodo = el.dataset.valore; disegna(); },
+  'indietro': () => history.back(),
+  /* --- Storico --- */
+  'vista-storico': el => { S.vistaStorico = el.dataset.valore; disegna(); },
+  'mese': el => {
+    const m = S.meseStorico || new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    S.meseStorico = new Date(m.getFullYear(), m.getMonth() + Number(el.dataset.valore), 1);
+    S.giornoStorico = null; disegna();
+  },
+  'giorno-storico': el => { S.giornoStorico = S.giornoStorico === el.dataset.valore ? null : el.dataset.valore; disegna(); },
   'mostra-archiviati': () => { S.mostraArchiviati = !S.mostraArchiviati; disegna(); },
   'nuovo-esercizio': () => vai('esercizio', { bozzaEs: { id: '', nome: S.ricercaArchivio, tipo: 'peso_rip', area: 'altro', attrezzo: '', gruppo: '', recupero_s: '90', nota: '', nome_strong: '', archiviato: NO } }),
   'apri-esercizio': el => {
@@ -1817,7 +2087,9 @@ const AZIONI = {
     });
     await salva(['Esercizi', e]);
     mostraAvviso('Esercizio salvato');
-    vai('esercizi', { vistaArchivio: 'esercizi', bozzaEs: null });
+    S.bozzaEs = null;
+    if (b.id) history.back(); // si torna da dove si era venuti (andamento dell'esercizio o elenco)
+    else vai('esercizio-andamento', { esercizioVisto: e.id });
   },
   'nuovo-modello': async () => {
     const modelli = vivi('Modelli');
@@ -2079,6 +2351,10 @@ document.addEventListener('input', async e => {
       const v = leggiNum(el.value);
       if (!segnaValido(el, v !== null)) return;
       m.ordine = v;
+    } else if (campo === 'sedute_settimana') {
+      const v = leggiNum(el.value);
+      if (!segnaValido(el, v !== null && (v === '' || (Number.isInteger(v) && v >= 0 && v <= 14)))) return;
+      m.sedute_settimana = v;
     } else if (campo === 'nome') {
       if (!segnaValido(el, el.value.trim() !== '')) return;
       m.nome = el.value.trim();
