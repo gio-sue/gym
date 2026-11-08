@@ -12,7 +12,7 @@
 
 const SI = 'sì', NO = 'no';
 // Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
-const VERSIONE_APP = 7;
+const VERSIONE_APP = 8;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
@@ -42,6 +42,15 @@ const TIPI_ES = { peso_rip: 'Peso e ripetizioni', rip: 'Solo ripetizioni', durat
 const TIPI_SERIE = { normale: 'Normale', riscaldamento: 'Riscaldamento', cedimento: 'Cedimento' };
 const LATI = { entrambi: 'Entrambi', dx: 'Destro', sx: 'Sinistro' };
 const AREE = { altro: 'Altro', ginocchio: 'Ginocchio', caviglia: 'Caviglia' };
+// Test di riabilitazione (§5.5 del brief). Ogni prova = una riga per lato, con la stessa data (solo il giorno).
+const TEST = {
+  wblt: { nome: 'WBLT', breve: 'WBLT', unita: 'cm' },
+  heel_raise: { nome: 'Heel raise su una gamba', breve: 'Heel raise', unita: 'rip' },
+  equilibrio: { nome: 'Equilibrio a occhi chiusi', breve: 'Equilibrio', unita: 's' },
+  leg_extension: { nome: 'Leg extension a 12,5 kg', breve: 'Leg extension', unita: 'rip' },
+  step_down: { nome: 'Step-down', breve: 'Step-down', unita: 'rip' },
+};
+const COLORE_LATO = { dx: '#60a5fa', sx: '#c4b5fd' }; // due colori diversi, nessun significato di «bene» o «male»
 // Quali numeri si scrivono per ogni tipo di esercizio.
 const COLONNE_TIPO = {
   peso_rip: [['peso_kg', 'kg'], ['rip', 'Rip']],
@@ -624,8 +633,10 @@ window.addEventListener('popstate', e => {
 const SCHERMATE = {
   oggi: disegnaOggi, sessione: disegnaSessione, storico: disegnaStorico, esercizi: disegnaArchivio,
   esercizio: disegnaFormEsercizio, modello: disegnaModello, test: disegnaTest, impostazioni: disegnaImpostazioni,
+  'test-nuovo': disegnaFormTest, 'test-andamento': disegnaAndamentoTest,
 };
-const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi' };
+const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi', 'test-nuovo': 'test', 'test-andamento': 'test' };
+const MODULI = ['esercizio', 'test-nuovo']; // schermate con un modulo non ancora salvato: non si ridisegnano da sole
 
 function disegna() {
   daRidisegnare = false;
@@ -642,13 +653,13 @@ function ridisegnaSePossibile() {
   const att = document.activeElement;
   if (att && att.matches('input, textarea') && $('#schermo').contains(att)) { daRidisegnare = true; return; }
   if (S.compatto) { daRidisegnare = true; return; } // si sta ordinando: si ridisegna quando il dito si alza
-  if (S.schermata === 'esercizio') { daRidisegnare = true; return; } // modulo non ancora salvato
+  if (MODULI.includes(S.schermata)) { daRidisegnare = true; return; } // modulo non ancora salvato
   disegna();
 }
 document.addEventListener('focusout', () => {
   setTimeout(() => {
     const att = document.activeElement;
-    if (daRidisegnare && S.schermata !== 'esercizio' && !(att && att.matches('input, textarea'))) disegna();
+    if (daRidisegnare && !MODULI.includes(S.schermata) && !(att && att.matches('input, textarea'))) disegna();
   }, 400);
 });
 
@@ -953,8 +964,151 @@ function disegnaModello() {
 }
 
 /* ---------- Test ---------- */
+// Data del test: solo il giorno, «AAAA-MM-GG». Si legge a mezzogiorno per non cambiare giorno col fuso.
+function giornoDa(t) { return /^\d{4}-\d{2}-\d{2}/.test(String(t)) ? new Date(String(t).slice(0, 10) + 'T12:00:00') : null; }
+function fmtGiornoBreve(t) {
+  const d = giornoDa(t);
+  if (!d) return String(t || '');
+  const stessoAnno = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString('it-IT', stessoAnno ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function infoTest(tipo) { return TEST[tipo] || { nome: tipo, breve: tipo, unita: '' }; }
+function unitaTest(tipo, righe) { return infoTest(tipo).unita || (righe.find(r => r.unita) || {}).unita || ''; }
+
+/** Le prove di un tipo di test, dalla più recente: [{ data, dx, sx, altri[] }]. Per lato vince la riga modificata per ultima. */
+function proveDi(tipo) {
+  const perData = new Map();
+  vivi('Test').filter(r => r.tipo === tipo).forEach(r => {
+    const data = String(r.data).slice(0, 10);
+    if (!perData.has(data)) perData.set(data, { data, dx: null, sx: null, altri: [] });
+    const p = perData.get(data);
+    if (r.lato === 'dx' || r.lato === 'sx') {
+      if (!p[r.lato] || String(r.aggiornato_il) > String(p[r.lato].aggiornato_il)) p[r.lato] = r;
+    } else p.altri.push(r);
+  });
+  return [...perData.values()].sort((a, b) => b.data.localeCompare(a.data));
+}
+function tipiTest() {
+  const presenti = new Set(vivi('Test').map(r => r.tipo).filter(Boolean));
+  return [...Object.keys(TEST), ...[...presenti].filter(t => !TEST[t]).sort()];
+}
+function valoreConUnita(r, unita) { return r && r.valore !== '' ? `${fmtNum(r.valore)}${unita ? ' ' + unita : ''}` : '–'; }
+
+/* ---------- Grafico a linee (SVG fatto a mano), riusabile ---------- */
+// serie: [{ nome, colore, punti: [{ t: Date, y: numero }] }]
+function graficoLinee(serie, unita) {
+  const tutti = serie.flatMap(s => s.punti);
+  if (!tutti.length) return '';
+  const L = 320, A = 170, sx = 34, dx = 10, su = 12, giu = 24;
+  // Asse verticale con numeri «tondi»: passo di 1, 2 o 5 (per 10, 100…), circa tre intervalli.
+  const vMin = Math.min(...tutti.map(p => p.y)), vMax = Math.max(...tutti.map(p => p.y));
+  const grezzo = Math.max((vMax - vMin) / 3, 0.5);
+  const potenza = Math.pow(10, Math.floor(Math.log10(grezzo)));
+  const passo = [1, 2, 5, 10].map(m => m * potenza).find(p => p >= grezzo);
+  let yMin = Math.floor(vMin / passo) * passo, yMax = Math.ceil(vMax / passo) * passo;
+  if (yMin === vMin && yMin - passo >= 0) yMin -= passo; // un po' d'aria sotto il valore più basso
+  if (yMax === vMax) yMax += passo;                         // e sopra il più alto
+  const tMin = Math.min(...tutti.map(p => +p.t)), tMax = Math.max(...tutti.map(p => +p.t));
+  const X = t => tMax === tMin ? (sx + L - dx) / 2 : sx + (t - tMin) / (tMax - tMin) * (L - sx - dx);
+  const Y = y => su + (yMax - y) / (yMax - yMin) * (A - su - giu);
+  let svg = `<svg viewBox="0 0 ${L} ${A}" width="100%" role="img" aria-label="Andamento nel tempo${unita ? ' in ' + esc(unita) : ''}">`;
+  for (let v = yMin; v <= yMax + passo / 2; v += passo) {
+    const y = Y(v);
+    svg += `<line x1="${sx}" y1="${y}" x2="${L - dx}" y2="${y}" stroke="#2a2e36"/><text x="${sx - 6}" y="${y + 4}" text-anchor="end" fill="#9aa3af" font-size="11">${fmtNum(Math.round(v * 10) / 10)}</text>`;
+  }
+  const date = [...new Set(tutti.map(p => +p.t))].sort((a, b) => a - b);
+  const etichette = date.length <= 3 ? date : [date[0], date[Math.floor(date.length / 2)], date[date.length - 1]];
+  etichette.forEach((t, i) => {
+    const anc = etichette.length === 1 ? 'middle' : i === 0 ? 'start' : i === etichette.length - 1 ? 'end' : 'middle';
+    svg += `<text x="${X(t)}" y="${A - 6}" text-anchor="${anc}" fill="#9aa3af" font-size="11">${new Date(t).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}</text>`;
+  });
+  serie.forEach(s => {
+    const punti = s.punti.slice().sort((a, b) => a.t - b.t);
+    if (punti.length > 1) svg += `<polyline fill="none" stroke="${s.colore}" stroke-width="2.5" stroke-linejoin="round" points="${punti.map(p => `${X(+p.t).toFixed(1)},${Y(p.y).toFixed(1)}`).join(' ')}"/>`;
+    punti.forEach(p => { svg += `<circle cx="${X(+p.t).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.5" fill="${s.colore}"/>`; });
+  });
+  return svg + '</svg>';
+}
+
+/* ---------- Test ---------- */
 function disegnaTest() {
-  return testata('Test') + `<div class="vuoto-msg">La registrazione dei test (WBLT, heel raise, equilibrio, leg extension, step-down) arriva nella fase 4.</div>`;
+  let html = testata('Test') + `<div class="pila">
+    <button class="btn largo" data-azione="nuovo-test">${ic('plus')} Nuovo test</button>`;
+  tipiTest().forEach(tipo => {
+    const info = infoTest(tipo), prove = proveDi(tipo), u = unitaTest(tipo, vivi('Test').filter(r => r.tipo === tipo));
+    const ultima = prove[0], prima = prove[1];
+    html += `<button class="card modello" data-azione="apri-test" data-valore="${esc(tipo)}">
+      <span class="fila"><span style="font-size:16px">${esc(info.nome)}</span><span class="tenue">${ultima ? fmtGiornoBreve(ultima.data) + ' ' + ic('chevron-right') : 'mai fatto'}</span></span>`;
+    if (ultima) {
+      html += `<span class="valori-test"><span><span class="tenue lato-test">destro</span><b style="color:${COLORE_LATO.dx}">${ultima.dx && ultima.dx.valore !== '' ? fmtNum(ultima.dx.valore) : '–'}</b> ${esc(u)}</span>
+        <span><span class="tenue lato-test">sinistro</span><b style="color:${COLORE_LATO.sx}">${ultima.sx && ultima.sx.valore !== '' ? fmtNum(ultima.sx.valore) : '–'}</b> ${esc(u)}</span></span>`;
+      if (prima) html += `<span class="tenue" style="display:block;margin-top:4px">il ${fmtGiornoBreve(prima.data)}: ${prima.dx ? fmtNum(prima.dx.valore) : '–'} · ${prima.sx ? fmtNum(prima.sx.valore) : '–'} ${esc(u)}</span>`;
+    }
+    html += `</button>`;
+  });
+  return html + `</div>`;
+}
+
+function disegnaAndamentoTest() {
+  const tipo = S.testTipo;
+  const info = infoTest(tipo), prove = proveDi(tipo), u = unitaTest(tipo, vivi('Test').filter(r => r.tipo === tipo));
+  let html = testata(esc(info.breve), 'torna-test', `<button class="icona" data-azione="nuovo-test" data-valore="${esc(tipo)}" aria-label="Nuovo test">${ic('plus')}</button>`) + `<div class="pila">`;
+  if (!prove.length) return html + `<div class="vuoto-msg">Nessuna prova registrata.</div></div>`;
+  const serie = ['dx', 'sx'].map(lato => ({
+    colore: COLORE_LATO[lato],
+    punti: prove.filter(p => p[lato] && p[lato].valore !== '' && !isNaN(num(p[lato].valore))).map(p => ({ t: giornoDa(p.data), y: num(p[lato].valore) })),
+  }));
+  html += `<div class="card"><div class="fila tenue" style="margin-bottom:6px"><span>${esc(u)}</span>
+      <span><span style="color:${COLORE_LATO.dx}">● destro</span> &nbsp; <span style="color:${COLORE_LATO.sx}">● sinistro</span></span></div>
+    ${prove.length > 1 ? graficoLinee(serie, u) : '<p class="tenue">Il grafico compare dalla seconda prova.</p>'}</div>`;
+  html += `<div class="card" style="padding:6px 8px"><table class="tabella">
+    <tr><th>Data</th><th style="color:${COLORE_LATO.dx}">dx</th><th style="color:${COLORE_LATO.sx}">sx</th><th>dolore dx · sx</th></tr>`;
+  prove.forEach(p => {
+    const dol = r => r && r.dolore !== '' ? fmtNum(r.dolore) : '–';
+    const note = [p.dx && p.dx.nota ? 'dx: ' + p.dx.nota : '', p.sx && p.sx.nota ? 'sx: ' + p.sx.nota : '', ...p.altri.map(r => `${r.lato || '?'}: ${fmtNum(r.valore)} ${r.nota || ''}`)].filter(Boolean);
+    html += `<tr data-azione="modifica-test" data-valore="${esc(p.data)}"><td>${fmtGiornoBreve(p.data)}</td>
+      <td>${p.dx ? fmtNum(p.dx.valore) || '–' : '–'}</td><td>${p.sx ? fmtNum(p.sx.valore) || '–' : '–'}</td><td>${dol(p.dx)} · ${dol(p.sx)}</td></tr>`;
+    if (note.length) html += `<tr data-azione="modifica-test" data-valore="${esc(p.data)}" class="riga-nota"><td colspan="4">${note.map(esc).join(' · ')}</td></tr>`;
+  });
+  return html + `</table></div><p class="tenue" style="text-align:center;margin:0">Tocca una riga per correggerla o eliminarla.</p></div>`;
+}
+
+/* Modulo di un test: destro e sinistro insieme. */
+function bozzaTest(tipo, data) {
+  const lato = r => r ? { id: r.id, valore: fmtNum(r.valore), dolore: fmtNum(r.dolore), nota: r.nota } : { id: '', valore: '', dolore: '', nota: '' };
+  const prova = data ? proveDi(tipo).find(p => p.data === data) : null;
+  return { tipo, data: data || ora().slice(0, 10), dataOriginale: data || '', modifica: !!prova, dx: lato(prova && prova.dx), sx: lato(prova && prova.sx) };
+}
+function disegnaFormTest() {
+  const b = S.bozzaTest;
+  if (!b) { S.schermata = 'test'; return disegnaTest(); }
+  const u = unitaTest(b.tipo, vivi('Test').filter(r => r.tipo === b.tipo));
+  const precedente = lato => proveDi(b.tipo).find(p => p.data < b.data && p[lato] && p[lato].valore !== '');
+  let html = testata(b.modifica ? 'Modifica test' : 'Nuovo test', b.modifica ? 'torna-andamento' : 'torna-test') + `<div class="pila">`;
+  html += b.modifica ? `<div style="font-size:17px;font-weight:500">${esc(infoTest(b.tipo).nome)}</div>`
+    : `<div class="scelte" style="margin:0">${tipiTest().map(t => `<button class="scelta ${b.tipo === t ? 'si' : ''}" data-azione="bozza-test-tipo" data-valore="${esc(t)}">${esc(infoTest(t).breve)}</button>`).join('')}</div>`;
+  html += `<div class="fila"><label class="tenue" for="t-data">Data</label><input class="testo" id="t-data" type="date" style="width:auto" value="${esc(b.data)}"></div>`;
+  ['dx', 'sx'].forEach(lato => {
+    const v = b[lato], prec = precedente(lato);
+    html += `<div class="card">
+      <div class="fila"><span style="font-weight:500;color:${COLORE_LATO[lato]}">${lato === 'dx' ? 'Destro' : 'Sinistro'}</span>
+        <span class="tenue">${prec ? `ultima volta ${valoreConUnita(prec[lato], u)} (${fmtGiornoBreve(prec.data)})` : ''}</span></div>
+      <div class="riga-btn" style="margin-top:8px">
+        <div><div class="tenue">${esc(u || 'valore')}</div><input class="num grande-test" inputmode="decimal" autocomplete="off" id="t-${lato}-valore" value="${esc(v.valore)}"></div>
+        <div><div class="tenue">dolore 0-10</div><input class="num grande-test" inputmode="decimal" autocomplete="off" id="t-${lato}-dolore" placeholder="–" value="${esc(v.dolore)}"></div>
+      </div>
+      <input class="testo" style="margin-top:8px" id="t-${lato}-nota" placeholder="nota breve" value="${esc(v.nota)}">
+    </div>`;
+  });
+  html += `<p class="errore" id="t-errore" style="font-size:13px;margin:0"></p>
+    <button class="btn largo" data-azione="salva-test">Salva</button>
+    ${b.modifica ? `<button class="btn2 pericolo largo" data-azione="elimina-test">${ic('trash')} Elimina questa prova</button>` : ''}</div>`;
+  return html;
+}
+function leggiFormTest() {
+  const b = S.bozzaTest;
+  b.data = $('#t-data').value || b.data;
+  ['dx', 'sx'].forEach(lato => ['valore', 'dolore', 'nota'].forEach(c => { b[lato][c] = $(`#t-${lato}-${c}`).value; }));
 }
 
 /* ---------- Impostazioni ---------- */
@@ -1693,6 +1847,54 @@ const AZIONI = {
   },
 
   /* --- Varie --- */
+  /* --- Test --- */
+  'nuovo-test': el => vai('test-nuovo', { bozzaTest: bozzaTest(el.dataset.valore || 'wblt') }),
+  'apri-test': el => vai('test-andamento', { testTipo: el.dataset.valore }),
+  'modifica-test': el => vai('test-nuovo', { bozzaTest: bozzaTest(S.testTipo, el.dataset.valore) }),
+  'torna-test': () => vai('test'),
+  'torna-andamento': () => vai('test-andamento'),
+  'bozza-test-tipo': el => { leggiFormTest(); S.bozzaTest.tipo = el.dataset.valore; disegna(); },
+  'salva-test': async () => {
+    leggiFormTest();
+    const b = S.bozzaTest;
+    const errore = t => { $('#t-errore').textContent = t; };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b.data)) return errore('Scegli una data.');
+    if (b.data > ora().slice(0, 10)) return errore('La data è nel futuro.');
+    if (b.data !== b.dataOriginale && proveDi(b.tipo).some(p => p.data === b.data)) {
+      return errore('In quella data c\'è già una prova di questo test: aprila dall\'andamento per correggerla.');
+    }
+    const u = unitaTest(b.tipo, vivi('Test').filter(r => r.tipo === b.tipo));
+    const daSalvare = [];
+    for (const lato of ['dx', 'sx']) {
+      const v = b[lato];
+      const valore = leggiNum(v.valore), dolore = leggiNum(v.dolore);
+      const nome = lato === 'dx' ? 'destro' : 'sinistro';
+      if (valore === null || (valore !== '' && valore < 0)) return errore(`Il valore del lato ${nome} non è un numero valido.`);
+      if (dolore === null || (dolore !== '' && (dolore < 0 || dolore > 10))) return errore(`Il dolore del lato ${nome} va da 0 a 10.`);
+      const esistente = v.id ? riga('Test', v.id) : null;
+      if (valore === '') {
+        if (dolore !== '' || v.nota.trim()) return errore(`Manca il valore del lato ${nome}.`);
+        if (esistente) { esistente.eliminato = SI; daSalvare.push(['Test', esistente]); } // valore cancellato: la riga si elimina
+        continue;
+      }
+      const r = esistente || nuovaRiga('Test', { id: nuovoId('TS'), origine: 'app' });
+      Object.assign(r, { data: b.data, tipo: b.tipo, lato, valore, unita: u, dolore, nota: v.nota.trim() });
+      daSalvare.push(['Test', r]);
+    }
+    if (!daSalvare.some(([, r]) => r.eliminato !== SI) && !b.modifica) return errore('Scrivi almeno un valore.');
+    await salvaLista(daSalvare);
+    mostraAvviso('Test salvato');
+    vai('test-andamento', { testTipo: b.tipo, bozzaTest: null });
+  },
+  'elimina-test': async () => {
+    const b = S.bozzaTest;
+    const righe = ['dx', 'sx'].map(l => b[l].id && riga('Test', b[l].id)).filter(Boolean);
+    righe.forEach(r => { r.eliminato = SI; });
+    await salvaLista(righe.map(r => ['Test', r]));
+    vai('test-andamento', { bozzaTest: null });
+    mostraAvviso('Prova eliminata', async () => { righe.forEach(r => { r.eliminato = NO; }); await salvaLista(righe.map(r => ['Test', r])); });
+  },
+
   'chiudi-foglio': () => chiudiFoglio(),
   'timer-meno': () => cambiaTimer(-15),
   'timer-piu': () => cambiaTimer(15),
