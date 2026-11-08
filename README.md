@@ -102,4 +102,10 @@ Se lo rifai con lo stesso file, le sessioni già importate vengono saltate. Il C
 
 ## Aggiornamenti dell'app
 
-Quando ricevi file nuovi, ricaricali su GitHub (stessa procedura, sovrascrivendo). Sul telefono l'app si aggiorna da sola: la versione nuova compare alla **seconda** apertura.
+Quando ricevi file nuovi, ricaricali su GitHub (stessa procedura, sovrascrivendo).
+
+1. Su GitHub, nella scheda **Actions** del repository, aspetta la spunta verde (di solito 1-2 minuti): vuol dire che il sito è pubblicato.
+2. Sul telefono apri Gym. L'app scarica da sola la versione nuova e in basso compare **«Nuova versione pronta · Aggiorna»**: tocca **Aggiorna**. I dati non si perdono.
+3. Per controllare quale versione stai usando: **Impostazioni → Versione**. Lì c'è anche **Cerca aggiornamenti**.
+
+Se la versione non cambia, chiudi Gym dalle app recenti e riaprila. **Non cancellare i dati di Chrome**: le modifiche non ancora inviate al foglio andrebbero perse.

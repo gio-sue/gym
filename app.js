@@ -11,6 +11,8 @@
 /* ======================= Costanti ======================= */
 
 const SI = 'sì', NO = 'no';
+// Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
+const VERSIONE_APP = 6;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
@@ -985,7 +987,11 @@ function disegnaImpostazioni() {
       <p class="tenue" style="margin:8px 0">Scarica in un file tutti i dati presenti sul telefono (senza il token).</p>
       <button class="btn2 largo" data-azione="imp-esporta">Esporta i dati</button>
     </div>
-    <p class="tenue" style="text-align:center">Unità di peso: kg · Gym, fase 2</p>
+    <div class="card">
+      <h2>Versione</h2>
+      <p class="tenue" style="margin:8px 0">Gym · versione <b>${VERSIONE_APP}</b> · unità di peso: kg</p>
+      <button class="btn2 largo" data-azione="cerca-aggiornamenti">Cerca aggiornamenti</button>
+    </div>
   </div>`;
 }
 
@@ -1248,13 +1254,15 @@ document.addEventListener('contextmenu', e => { if (e.target.closest('[data-tien
 $('#velo').addEventListener('click', e => { if (e.target.id === 'velo' && !conto) chiudiFoglio(); });
 
 let avvisoTimeout = null, avvisoAzione = null;
-function mostraAvviso(testo, annulla) {
+// «durata» 0 = l'avviso resta finché non si tocca il bottone.
+function mostraAvviso(testo, annulla, etichetta = 'Annulla', durata = 6000) {
   $('#avviso-testo').textContent = testo;
+  $('#avviso-azione').textContent = etichetta;
   avvisoAzione = annulla || null;
   $('#avviso-azione').hidden = !annulla;
   $('#avviso').hidden = false;
   clearTimeout(avvisoTimeout);
-  avvisoTimeout = setTimeout(() => { $('#avviso').hidden = true; avvisoAzione = null; }, 6000);
+  if (durata) avvisoTimeout = setTimeout(() => { $('#avviso').hidden = true; avvisoAzione = null; }, durata);
 }
 $('#avviso-azione').addEventListener('click', async () => {
   const f = avvisoAzione; avvisoAzione = null; $('#avviso').hidden = true;
@@ -1660,6 +1668,14 @@ const AZIONI = {
   },
   'imp-sync': () => sincronizza(),
   'imp-riscarica': () => sincronizza({ completo: true }),
+  'cerca-aggiornamenti': async () => {
+    if (!registrazioneSW) { mostraAvviso('Aggiornamenti non disponibili qui'); return; }
+    mostraAvviso('Cerco…');
+    await cercaAggiornamenti();
+    const reg = registrazioneSW;
+    if (reg.installing || reg.waiting) mostraAvviso('Sto scaricando la versione nuova…');
+    else mostraAvviso(`Hai già l'ultima versione (${VERSIONE_APP})`);
+  },
   'imp-esporta': () => {
     const dati = { esportato_il: ora(), versione_schema: 1, schede: {} };
     SCHEDE.forEach(s => { dati.schede[s] = [...D[s].values()]; });
@@ -1852,9 +1868,26 @@ async function avvio() {
   window.addEventListener('online', () => sincronizza());
   window.addEventListener('offline', () => aggiornaStatoSync());
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') { controllaWakeLock(); aggiornaTimer(); sincronizza(); }
+    if (document.visibilityState === 'visible') { controllaWakeLock(); aggiornaTimer(); sincronizza(); cercaAggiornamenti(); }
   });
   sincronizza();
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  avviaAggiornamenti();
+}
+
+/* ======================= Aggiornamenti dell'app ======================= */
+
+let registrazioneSW = null;
+function avviaAggiornamenti() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  const giaInstallata = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js').then(reg => { registrazioneSW = reg; cercaAggiornamenti(); }).catch(() => {});
+  // Quando la versione nuova è scaricata e pronta, lo si dice: un tocco su «Aggiorna» ricarica l'app.
+  // I dati non si perdono: sono già salvati nel telefono.
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (giaInstallata) mostraAvviso('Nuova versione pronta', () => location.reload(), 'Aggiorna', 0);
+  });
+}
+function cercaAggiornamenti() {
+  if (registrazioneSW) return registrazioneSW.update().catch(() => {});
 }
 avvio();
