@@ -1,7 +1,7 @@
 /* Service worker di Gym: tiene una copia dei file dell'app sul telefono,
  * così l'app si apre anche senza rete. I dati NON passano di qui (stanno in IndexedDB).
  * Quando si pubblica una nuova versione, aumentare il numero in VERSIONE. */
-const VERSIONE = 'gym-v2';
+const VERSIONE = 'gym-v3';
 const FILE = ['./', 'index.html', 'app.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

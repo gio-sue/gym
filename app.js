@@ -27,6 +27,9 @@ const COLONNE = {
 };
 const SCHEDE = Object.keys(COLONNE);
 
+// Per ogni scheda «figlia», la colonna che indica la riga «madre».
+const PADRE = { Serie: 'sessione_esercizio_id', SessioniEsercizi: 'sessione_id', ModelliSerie: 'modello_esercizio_id', ModelliEsercizi: 'modello_id' };
+
 // Campi di riabilitazione per area (§6 del brief).
 const RIAB = {
   ginocchio: { titolo: 'Riabilitazione ginocchio', campi: [['ginocchio_pienezza', 'Pienezza'], ['ginocchio_dolore', 'Dolore']] },
@@ -36,6 +39,15 @@ const RIAB = {
 const TIPI_ES = { peso_rip: 'Peso e ripetizioni', rip: 'Solo ripetizioni', durata: 'Durata', peso_durata: 'Peso e durata', cardio: 'Cardio' };
 const TIPI_SERIE = { normale: 'Normale', riscaldamento: 'Riscaldamento', cedimento: 'Cedimento' };
 const LATI = { entrambi: 'Entrambi', dx: 'Destro', sx: 'Sinistro' };
+const AREE = { altro: 'Altro', ginocchio: 'Ginocchio', caviglia: 'Caviglia' };
+// Quali numeri si scrivono per ogni tipo di esercizio.
+const COLONNE_TIPO = {
+  peso_rip: [['peso_kg', 'kg'], ['rip', 'Rip']],
+  rip: [['rip', 'Rip']],
+  durata: [['durata_s', 'Sec']],
+  peso_durata: [['peso_kg', 'kg'], ['durata_s', 'Sec']],
+  cardio: [['durata_min', 'Min']],
+};
 
 // Icone disegnate a mano (SVG), così non servono librerie esterne.
 const ICONE = {
@@ -44,6 +56,7 @@ const ICONE = {
   play: '<path d="M7 4v16l13-8z"/>',
   dots: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
   'chevron-down': '<path d="M6 9l6 6 6-6"/>',
+  'chevron-right': '<path d="M9 6l6 6-6 6"/>',
   'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
   'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
   'arrow-left': '<path d="M19 12H5M11 6l-6 6 6 6"/>',
@@ -57,6 +70,9 @@ const ICONE = {
   trash: '<path d="M4 7h16M10 11v6M14 11v6M5 7l1 13h12l1-13M9 7V4h6v3"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/>',
   timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  unlink: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7"/><path d="M4 4l16 16"/>',
+  upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
 };
 function ic(nome) { return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONE[nome] || ''}</svg>`; }
 
@@ -105,6 +121,7 @@ function fmtGiorno(d) { return d ? d.toLocaleDateString('it-IT', { weekday: 'sho
 function fmtOraBreve(d) { return d ? d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : ''; }
 function fmtKg(v) { return Math.round(v).toLocaleString('it-IT') + ' kg'; }
 function perPosizione(a, b) { return (num(a.posizione) || 0) - (num(b.posizione) || 0); }
+function perNome(a, b) { return String(a.nome).localeCompare(String(b.nome), 'it'); }
 
 /* ======================= IndexedDB (memoria del telefono) ======================= */
 
@@ -134,6 +151,12 @@ function leggiUno(store, k) {
     r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error);
   });
 }
+function contaCoda() {
+  return new Promise((ok, ko) => {
+    const r = idb.transaction('coda').objectStore('coda').count();
+    r.onsuccess = () => ok(r.result); r.onerror = () => ko(r.error);
+  });
+}
 // Scrive in una sola transazione: o tutto o niente.
 function scriviIn(operazioni) {
   return new Promise((ok, ko) => {
@@ -154,9 +177,36 @@ SCHEDE.forEach(s => { D[s] = new Map(); });
 const meta = {};            // url, token, cursore, ultimoInvio, ultimoErrore, ...
 let codaQuante = 0;
 let contatoreVersione = 0;
+let versioneDati = 0;       // cambia a ogni modifica: serve a rifare gli indici
 
 function vivi(scheda) { return [...D[scheda].values()].filter(r => r.eliminato !== SI); }
 function riga(scheda, id) { return D[scheda].get(id); }
+
+// Indici per trovare in fretta le righe «figlie» (rifatti solo quando i dati cambiano).
+const indici = {};
+function indice(scheda, campo) {
+  const chiave = scheda + '.' + campo;
+  let c = indici[chiave];
+  if (!c || c.v !== versioneDati) {
+    const m = new Map();
+    D[scheda].forEach(r => {
+      if (r.eliminato === SI) return;
+      const k = r[campo];
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(r);
+    });
+    m.forEach(a => a.sort(perPosizione));
+    c = indici[chiave] = { v: versioneDati, m };
+  }
+  return c.m;
+}
+function figli(scheda, padreId) { return (indice(scheda, PADRE[scheda]).get(padreId) || []).slice(); }
+const serieDi = id => figli('Serie', id);
+const eserciziDi = id => figli('SessioniEsercizi', id);
+const vociDi = id => figli('ModelliEsercizi', id);
+const previsteDi = id => figli('ModelliSerie', id);
+function figliDi(scheda, r) { return scheda === 'SessioniEsercizi' ? serieDi(r.id) : previsteDi(r.id); }
+function fratelliDi(scheda, r) { return figli(scheda, r[PADRE[scheda]]); }
 
 function nuovaRiga(scheda, valori) {
   const r = {};
@@ -171,7 +221,8 @@ function soloSchema(scheda, r) {
 }
 
 /** Salva subito una o più righe: memoria, IndexedDB e coda di invio. */
-async function salva(...coppie) {
+function salva(...coppie) { return salvaLista(coppie); }
+async function salvaLista(coppie) {
   const adesso = ora();
   const operazioni = [];
   coppie.forEach(([scheda, r]) => {
@@ -182,8 +233,9 @@ async function salva(...coppie) {
     operazioni.push(['righe', 'put', { k, scheda, riga: copia }]);
     operazioni.push(['coda', 'put', { k, scheda, riga: copia, v: Date.now() + '-' + (contatoreVersione++) }]);
   });
+  versioneDati++;
   await scriviIn(operazioni);
-  codaQuante = (await tutti('coda')).length;
+  codaQuante = await contaCoda();
   aggiornaStatoSync();
   programmaSync();
 }
@@ -196,7 +248,8 @@ async function salvaMeta(chiave, valore) {
 async function caricaTutto() {
   (await tutti('righe')).forEach(({ scheda, riga: r }) => { if (D[scheda]) D[scheda].set(r.id, r); });
   (await tutti('meta')).forEach(({ chiave, valore }) => { meta[chiave] = valore; });
-  codaQuante = (await tutti('coda')).length;
+  codaQuante = await contaCoda();
+  versioneDati++;
 }
 
 /* ======================= Sincronizzazione con il foglio ======================= */
@@ -211,7 +264,7 @@ function programmaSync() {
 
 async function chiamaPonte(corpo) {
   const controllo = new AbortController();
-  const scadenza = setTimeout(() => controllo.abort(), 45000);
+  const scadenza = setTimeout(() => controllo.abort(), 60000);
   try {
     // Testo semplice: così il browser non fa la richiesta preliminare CORS.
     const risposta = await fetch(meta.url, {
@@ -245,7 +298,7 @@ async function sincronizza({ completo = false } = {}) {
     // 1) Invio della coda, a blocchi.
     let coda = await tutti('coda');
     while (coda.length) {
-      const lotto = coda.slice(0, 200);
+      const lotto = coda.slice(0, 500);
       const righe = {};
       lotto.forEach(e => { (righe[e.scheda] = righe[e.scheda] || []).push(e.riga); });
       await chiamaPonte({ azione: 'push', righe });
@@ -256,9 +309,10 @@ async function sincronizza({ completo = false } = {}) {
       }
       await scriviIn(daTogliere);
       await salvaMeta('ultimoInvio', ora());
-      coda = coda.slice(200);
+      coda = coda.slice(500);
+      codaQuante = await contaCoda();
+      aggiornaStatoSync();
     }
-    codaQuante = (await tutti('coda')).length;
 
     // 2) Lettura delle novità. Una volta al giorno si rilegge tutto, per sicurezza.
     const oggi = ora().slice(0, 10);
@@ -303,6 +357,7 @@ async function unisci(schede) {
       cambiate++;
     });
   });
+  if (cambiate) versioneDati++;
   await scriviIn(operazioni);
   return cambiate;
 }
@@ -317,7 +372,7 @@ function testoStatoSync() {
 }
 function aggiornaStatoSync() {
   document.querySelectorAll('[data-stato-sync]').forEach(el => { el.innerHTML = testoStatoSync(); });
-  if (S.schermata === 'impostazioni' && !document.activeElement.matches('input')) disegna();
+  if (S.schermata === 'impostazioni' && !document.activeElement.matches('input') && $('#velo').hidden) disegna();
 }
 
 /* ======================= Timer di recupero ======================= */
@@ -376,8 +431,24 @@ function aggiornaTimer() {
   document.body.classList.toggle('con-timer', visibile);
 }
 
+/** Dopo una serie fatta: parte il recupero. Nelle superserie parte solo dopo la coppia. */
+function timerDopoSerie(s) {
+  const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
+  const sess = se && riga('Sessioni', se.sessione_id);
+  if (!sessioneAperta(sess)) return;
+  const comp = compagno(eserciziDi(sess.id), se);
+  if (comp) {
+    const k = serieDi(se.id).indexOf(s);
+    const sua = serieDi(comp.id)[k];
+    if (sua && sua.fatta !== SI) return; // ora tocca all'altro esercizio della coppia
+    avviaTimer(Math.max(recuperoDi(se), recuperoDi(comp)));
+    return;
+  }
+  avviaTimer(recuperoDi(se));
+}
+
 /* Conto alla rovescia per le serie a durata (isometrie). */
-let conto = null; // { serieId, obiettivo, partenza, fase }
+let conto = null; // { serieId, obiettivo, partenza }
 function avviaConto(serieId) {
   const s = riga('Serie', serieId);
   const obiettivo = num(s.durata_s);
@@ -413,8 +484,7 @@ async function chiudiConto(registra) {
   s.fatta = SI;
   await salva(['Serie', s]);
   if (c.obiettivo && passati >= c.obiettivo) suona();
-  const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
-  if (se && sessioneAperta(riga('Sessioni', se.sessione_id))) avviaTimer(recuperoDi(se));
+  timerDopoSerie(s);
   disegna();
 }
 
@@ -439,11 +509,9 @@ function sessioneAperta(sess) { return sess && sess.eliminato !== SI && !sess.fi
 function sessioneInCorso() {
   return vivi('Sessioni').filter(s => !s.fine).sort((a, b) => String(b.inizio).localeCompare(String(a.inizio)))[0] || null;
 }
-function eserciziDi(sessioneId) { return vivi('SessioniEsercizi').filter(r => r.sessione_id === sessioneId).sort(perPosizione); }
-function serieDi(seId) { return vivi('Serie').filter(r => r.sessione_esercizio_id === seId).sort(perPosizione); }
 function voceModello(sess, esercizioId) {
   if (!sess || !sess.modello_id) return null;
-  return vivi('ModelliEsercizi').find(m => m.modello_id === sess.modello_id && m.esercizio_id === esercizioId) || null;
+  return vociDi(sess.modello_id).find(m => m.esercizio_id === esercizioId) || null;
 }
 function recuperoDi(se) {
   const me = voceModello(riga('Sessioni', se.sessione_id), se.esercizio_id);
@@ -473,13 +541,68 @@ function riepilogoSessione(sess) {
   return { fatte, totali, volume, durata, nomi };
 }
 
+/* ----- Superserie: due esercizi con lo stesso superserie_id (solo coppie) ----- */
+function compagno(lista, r) {
+  if (!r || !r.superserie_id) return null;
+  const altri = lista.filter(x => x !== r && x.superserie_id === r.superserie_id);
+  return altri.length === 1 ? altri[0] : null;
+}
+// Divide l'elenco in «blocchi»: un esercizio singolo oppure una coppia di superserie.
+function blocchi(lista) {
+  const visti = new Set(), out = [];
+  lista.forEach(r => {
+    if (visti.has(r)) return;
+    const c = compagno(lista, r);
+    visti.add(r);
+    if (c) { visti.add(c); out.push([r, c]); } else out.push([r]);
+  });
+  return out;
+}
+async function riordinaBlocchi(scheda, lista) {
+  const cambiate = [];
+  blocchi(lista).flat().forEach((r, i) => { if (num(r.posizione) !== i + 1) { r.posizione = i + 1; cambiate.push([scheda, r]); } });
+  if (cambiate.length) await salvaLista(cambiate);
+}
+
+/* ----- Valori dell'ultima volta ----- */
+// Le serie fatte dello stesso esercizio nell'ultima sessione precedente che le contiene.
+function serieUltimaVolta(sess, se) {
+  const candidati = (indice('SessioniEsercizi', 'esercizio_id').get(se.esercizio_id) || [])
+    .map(x => ({ x, s: riga('Sessioni', x.sessione_id) }))
+    .filter(({ x, s }) => x.id !== se.id && s && s.eliminato !== SI && s.id !== sess.id && String(s.inizio) < String(sess.inizio))
+    .sort((a, b) => String(b.s.inizio).localeCompare(String(a.s.inizio)));
+  for (const { x } of candidati) {
+    const fatte = serieDi(x.id).filter(s => s.fatta === SI);
+    if (fatte.length) return fatte;
+  }
+  return [];
+}
+// Abbina la serie k-esima dello stesso lato (e dello stesso genere: riscaldamento o no).
+function precedenteDi(lista, s, precedenti) {
+  const genere = x => (x.lato || 'entrambi') + '|' + (x.tipo === 'riscaldamento' ? 'r' : 'n');
+  const k = lista.filter(x => genere(x) === genere(s)).indexOf(s);
+  return precedenti.filter(x => genere(x) === genere(s))[k] || null;
+}
+function fmtPrecedente(tipo, p) {
+  const kg = p.peso_kg === '' ? '' : fmtNum(p.peso_kg);
+  if (tipo === 'rip') return `${p.rip} rip`;
+  if (tipo === 'durata') return `${p.durata_s}″`;
+  if (tipo === 'peso_durata') return `${kg || 0} kg × ${p.durata_s}″`;
+  if (tipo === 'cardio') return `${Math.round(num(p.durata_s) / 60)} min`;
+  return kg === '' ? `${p.rip} rip` : `${kg} × ${p.rip}`;
+}
+
 /* ======================= Navigazione e disegno ======================= */
 
-const S = { schermata: 'oggi', sessioneId: null, ricerca: '', ricercaArchivio: '', nuovoEs: null, foglio: null };
+const S = {
+  schermata: 'oggi', sessioneId: null, modelloId: null, bozzaEs: null,
+  vistaArchivio: 'esercizi', mostraArchiviati: false,
+  ricerca: '', ricercaArchivio: '', nuovoEs: null, sceltaPer: 'sessione', importazione: null,
+};
 
 function vai(schermata, extra = {}) {
   Object.assign(S, extra);
-  if (S.schermata !== schermata) history.pushState({ schermata, sessioneId: S.sessioneId }, '');
+  if (S.schermata !== schermata) history.pushState({ schermata, sessioneId: S.sessioneId, modelloId: S.modelloId }, '');
   S.schermata = schermata;
   disegna();
   window.scrollTo(0, 0);
@@ -487,17 +610,24 @@ function vai(schermata, extra = {}) {
 window.addEventListener('popstate', e => {
   if (!$('#velo').hidden) chiudiFoglio();
   const st = e.state || { schermata: 'oggi' };
-  S.schermata = st.schermata; S.sessioneId = st.sessioneId || S.sessioneId;
+  S.schermata = st.schermata;
+  S.sessioneId = st.sessioneId || S.sessioneId;
+  S.modelloId = st.modelloId || S.modelloId;
   disegna();
 });
 
-const SCHERMATE = { oggi: disegnaOggi, sessione: disegnaSessione, storico: disegnaStorico, esercizi: disegnaArchivio, test: disegnaTest, impostazioni: disegnaImpostazioni };
+const SCHERMATE = {
+  oggi: disegnaOggi, sessione: disegnaSessione, storico: disegnaStorico, esercizi: disegnaArchivio,
+  esercizio: disegnaFormEsercizio, modello: disegnaModello, test: disegnaTest, impostazioni: disegnaImpostazioni,
+};
+const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi' };
 
 function disegna() {
   daRidisegnare = false;
   const fn = SCHERMATE[S.schermata] || disegnaOggi;
   $('#schermo').innerHTML = fn();
-  const tab = S.schermata === 'sessione' ? (sessioneAperta(riga('Sessioni', S.sessioneId)) ? 'oggi' : 'storico') : S.schermata;
+  let tab = TAB_DI[S.schermata] || S.schermata;
+  if (S.schermata === 'sessione') tab = sessioneAperta(riga('Sessioni', S.sessioneId)) ? 'oggi' : 'storico';
   document.querySelectorAll('#barra button').forEach(b => b.classList.toggle('attiva', b.dataset.vai === tab));
   aggiornaCronometro();
 }
@@ -506,23 +636,30 @@ let daRidisegnare = false;
 function ridisegnaSePossibile() {
   const att = document.activeElement;
   if (att && att.matches('input, textarea') && $('#schermo').contains(att)) { daRidisegnare = true; return; }
+  if (S.schermata === 'esercizio') { daRidisegnare = true; return; } // modulo non ancora salvato
   disegna();
 }
 document.addEventListener('focusout', () => {
   setTimeout(() => {
     const att = document.activeElement;
-    if (daRidisegnare && !(att && att.matches('input, textarea'))) disegna();
+    if (daRidisegnare && S.schermata !== 'esercizio' && !(att && att.matches('input, textarea'))) disegna();
   }, 400);
 });
 
+function testata(titolo, indietro, destra = '') {
+  return `<div class="top">${indietro ? `<button class="icona" data-azione="${indietro}" aria-label="Indietro">${ic('arrow-left')}</button>` : ''}
+    <h1 style="flex:1">${titolo}</h1>${destra}</div>`;
+}
+
 /* ---------- Oggi ---------- */
+function modelliOrdinati() {
+  return vivi('Modelli').sort((a, b) =>
+    String(a.cartella).localeCompare(String(b.cartella), 'it') || (num(a.ordine) || 0) - (num(b.ordine) || 0) || perNome(a, b));
+}
 function disegnaOggi() {
   const inCorso = sessioneInCorso();
-  const modelli = vivi('Modelli').sort((a, b) =>
-    String(a.cartella).localeCompare(String(b.cartella), 'it') || (num(a.ordine) || 0) - (num(b.ordine) || 0) || String(a.nome).localeCompare(String(b.nome), 'it'));
   const sessioni = vivi('Sessioni');
-  const voci = vivi('ModelliEsercizi');
-  let html = `<div class="top"><h1>Oggi</h1><button class="icona" data-vai="impostazioni" aria-label="Impostazioni">${ic('settings')}</button></div><div class="pila">`;
+  let html = testata('Oggi', '', `<button class="icona" data-vai="impostazioni" aria-label="Impostazioni">${ic('settings')}</button>`) + `<div class="pila">`;
   if (inCorso) {
     html += `<div class="card in-corso"><div class="tenue">Sessione in corso</div>
       <div style="font-size:17px;font-weight:500;margin:2px 0 8px">${esc(inCorso.titolo)} · iniziata alle ${fmtOraBreve(dataDa(inCorso.inizio))}</div>
@@ -530,76 +667,80 @@ function disegnaOggi() {
   }
   html += `<button class="btn2 largo" data-azione="nuova-vuota">${ic('plus')} Sessione vuota</button>`;
   let cartella = null;
+  const modelli = modelliOrdinati();
   modelli.forEach(m => {
     if (m.cartella !== cartella) { cartella = m.cartella; html += `<div class="etichetta">${esc(cartella || 'Senza cartella')}</div>`; }
-    const quanti = voci.filter(v => v.modello_id === m.id).length;
+    const quanti = vociDi(m.id).length;
     const ultima = sessioni.filter(s => s.modello_id === m.id && s.fine).map(s => s.inizio).sort().pop();
     html += `<button class="card fila modello" data-azione="avvia-modello" data-id="${esc(m.id)}">
       <span><span style="display:block;font-size:16px">${esc(m.nome)}</span><span class="tenue">${quanti} esercizi${ultima ? ' · ultima ' + fmtGiorno(dataDa(ultima)) : ''}</span></span>${ic('play')}</button>`;
   });
-  if (!modelli.length) html += `<div class="vuoto-msg">I modelli compariranno qui dopo la prima sincronizzazione con il foglio.</div>`;
+  if (!modelli.length) html += `<div class="vuoto-msg">Nessun modello. Puoi crearne uno in Esercizi → Modelli.</div>`;
   html += `<div class="stato-sync" data-stato-sync>${testoStatoSync()}</div></div>`;
   return html;
 }
 
-/* ---------- Sessione ---------- */
-function etichettaSerie(serie, s) {
-  if (s.tipo === 'riscaldamento') return { testo: 'R', classe: 'risc' };
-  const n = serie.filter(x => x.tipo !== 'riscaldamento' && x.lato === s.lato && perPosizione(x, s) <= 0).length;
-  return { testo: `<b>${n}</b>${s.lato && s.lato !== 'entrambi' ? ' ' + s.lato : ''}`, classe: s.tipo === 'cedimento' ? 'ced' : '' };
+/* ---------- Righe delle serie (sessione e modello) ---------- */
+function etichettaSerie(lista, s, lettera = '') {
+  if (s.tipo === 'riscaldamento') return { testo: lettera + 'R', classe: 'risc' };
+  const n = lista.filter(x => x.tipo !== 'riscaldamento' && x.lato === s.lato && perPosizione(x, s) <= 0).length;
+  return { testo: `<b>${lettera}${n}</b>${s.lato && s.lato !== 'entrambi' ? ' ' + s.lato : ''}`, classe: s.tipo === 'cedimento' ? 'ced' : '' };
 }
 
-function campoNum(s, campo, extra = '') {
-  return `<input class="num ${extra}" inputmode="decimal" autocomplete="off" data-serie="${esc(s.id)}" data-campo="${campo}" value="${esc(fmtNum(s[campo]))}">`;
+function campoNum(scheda, r, campo) {
+  const v = campo === 'durata_min' ? (r.durata_s === '' ? '' : Math.round(num(r.durata_s) / 6) / 10) : r[campo];
+  return `<input class="num" inputmode="decimal" autocomplete="off" data-scheda="${scheda}" data-id="${esc(r.id)}" data-campo="${campo}" value="${esc(fmtNum(v))}">`;
 }
 
-function disegnaSerie(es, serie, s) {
-  const tipo = es ? es.tipo : 'peso_rip';
-  const et = etichettaSerie(serie, s);
-  let celle = `<button class="lab-serie ${et.classe}" data-azione="menu-serie" data-serie="${esc(s.id)}">${et.testo}</button>`;
-  celle += `<span class="ultima">—</span>`; // «ultima volta»: arriva in fase 2
-  if (tipo === 'peso_rip') celle += campoNum(s, 'peso_kg') + campoNum(s, 'rip');
-  else if (tipo === 'rip') celle += campoNum(s, 'rip');
-  else if (tipo === 'durata') celle += campoNum(s, 'durata_s');
-  else if (tipo === 'peso_durata') celle += campoNum(s, 'peso_kg') + campoNum(s, 'durata_s');
-  else if (tipo === 'cardio') {
-    const min = s.durata_s === '' ? '' : Math.round(num(s.durata_s) / 6) / 10;
-    celle += `<input class="num" inputmode="decimal" autocomplete="off" data-serie="${esc(s.id)}" data-campo="durata_min" value="${esc(fmtNum(min))}">`;
+function rigaSerie(scheda, tipo, lista, s, lettera, precedenti) {
+  const sessione = scheda === 'Serie';
+  const et = etichettaSerie(lista, s, lettera);
+  let celle = `<button class="lab-serie ${et.classe}" data-azione="menu-serie" data-scheda="${scheda}" data-id="${esc(s.id)}">${et.testo}</button>`;
+  if (sessione) {
+    const p = precedenti && precedenteDi(lista, s, precedenti);
+    celle += p
+      ? `<button class="ultima" data-azione="usa-precedente" data-id="${esc(s.id)}" data-peso="${esc(p.peso_kg)}" data-rip="${esc(p.rip)}" data-durata="${esc(p.durata_s)}">${esc(fmtPrecedente(tipo, p))}</button>`
+      : `<span class="ultima">—</span>`;
   }
-  celle += campoNum(s, 'rpe', 'rpe');
-  celle += `<button class="spunta" data-azione="spunta" data-serie="${esc(s.id)}" aria-label="Serie fatta">${ic('check')}</button>`;
+  COLONNE_TIPO[tipo].forEach(([c]) => { celle += campoNum(scheda, s, c); });
+  celle += campoNum(scheda, s, sessione ? 'rpe' : 'rpe_previsto');
+  if (sessione) celle += `<button class="spunta" data-azione="spunta" data-id="${esc(s.id)}" aria-label="Serie fatta">${ic('check')}</button>`;
   return `<div class="scorri"><div class="scorri-fondo">${ic('trash')}${ic('trash')}</div>
-    <div class="serie c-${esc(tipo)} ${s.fatta === SI ? 'fatta' : ''}" data-riga-serie="${esc(s.id)}">${celle}</div></div>`;
+    <div class="serie c-${esc(tipo)} ${sessione ? '' : 'mod'} ${s.fatta === SI ? 'fatta' : ''}" data-scheda="${scheda}" data-id="${esc(s.id)}">${celle}</div></div>`;
 }
 
-function intestazioneSerie(tipo) {
-  const col = { peso_rip: ['kg', 'Rip'], rip: ['Rip'], durata: ['Sec'], peso_durata: ['kg', 'Sec'], cardio: ['Min'] }[tipo] || ['kg', 'Rip'];
-  return `<div class="serie intest c-${esc(tipo)}"><span>Serie</span><span>Ultima volta</span>${col.map(c => `<span>${c}</span>`).join('')}<span>RPE</span><span></span></div>`;
+function intestazioneSerie(tipo, sessione) {
+  return `<div class="serie intest c-${esc(tipo)} ${sessione ? '' : 'mod'}"><span>Serie</span>${sessione ? '<span>Ultima volta</span>' : ''}
+    ${COLONNE_TIPO[tipo].map(([, t]) => `<span>${t}</span>`).join('')}<span>RPE</span>${sessione ? '<span></span>' : ''}</div>`;
 }
 
-function disegnaEsercizio(sess, se) {
+function tipoDi(es) { return es && COLONNE_TIPO[es.tipo] ? es.tipo : 'peso_rip'; }
+
+/* ---------- Sessione ---------- */
+function disegnaEsercizioSessione(sess, se, lettera) {
   const es = riga('Esercizi', se.esercizio_id);
-  const tipo = es && TIPI_ES[es.tipo] ? es.tipo : 'peso_rip';
+  const tipo = tipoDi(es);
   const serie = serieDi(se.id);
   const me = voceModello(sess, se.esercizio_id);
   const rec = recuperoDi(se);
+  const precedenti = serieUltimaVolta(sess, se);
   let html = `<div class="card" style="padding:12px 8px" data-se="${esc(se.id)}">
     <div class="fila" style="padding:0 4px 8px;align-items:flex-start"><div>
-      <div class="es-titolo">${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}</div>
-      ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}${se.superserie_id ? '<span class="tag">superserie</span>' : ''}
+      <div class="es-titolo">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}</div>
+      ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}
       <span class="tenue">${rec ? 'recupero ' + fmtDurata(rec) : 'senza recupero'}</span>
       ${me && me.nota ? `<p class="indicazione">${esc(me.nota)}</p>` : ''}
-    </div><button class="icona" data-azione="menu-es" data-se="${esc(se.id)}" aria-label="Opzioni esercizio">${ic('dots')}</button></div>`;
-  html += intestazioneSerie(tipo);
-  serie.forEach(s => { html += disegnaSerie(es, serie, s); });
+    </div><button class="icona" data-azione="menu-es" data-scheda="SessioniEsercizi" data-id="${esc(se.id)}" aria-label="Opzioni esercizio">${ic('dots')}</button></div>`;
+  html += intestazioneSerie(tipo, true);
+  serie.forEach(s => { html += rigaSerie('Serie', tipo, serie, s, lettera, precedenti); });
   html += `<div class="riga-btn" style="padding:8px 4px 0">
-    <button class="btn2" style="font-size:14px" data-azione="aggiungi-serie" data-se="${esc(se.id)}">${ic('plus')} Serie</button>
-    <button class="btn2" style="font-size:14px" data-azione="copia-precedente" data-se="${esc(se.id)}">${ic('copy')} Copia precedente</button></div>`;
+    <button class="btn2" style="font-size:14px" data-azione="aggiungi-serie" data-scheda="Serie" data-padre="${esc(se.id)}">${ic('plus')} Serie</button>
+    <button class="btn2" style="font-size:14px" data-azione="copia-precedente" data-scheda="Serie" data-padre="${esc(se.id)}">${ic('copy')} Copia precedente</button></div>`;
   if (tipo === 'durata' || tipo === 'peso_durata') {
     const prossima = serie.find(s => s.fatta !== SI);
     if (prossima) {
-      const et = etichettaSerie(serie, prossima);
-      html += `<div style="padding:8px 4px 0"><button class="btn largo" data-azione="avvia-durata" data-serie="${esc(prossima.id)}">${ic('timer')} Avvia serie ${et.testo.replace(/<[^>]+>/g, '')}${prossima.durata_s !== '' ? ' · ' + prossima.durata_s + '″' : ''}</button></div>`;
+      const et = etichettaSerie(serie, prossima, lettera);
+      html += `<div style="padding:8px 4px 0"><button class="btn largo" data-azione="avvia-durata" data-id="${esc(prossima.id)}">${ic('timer')} Avvia serie ${et.testo.replace(/<[^>]+>/g, '')}${prossima.durata_s !== '' ? ' · ' + prossima.durata_s + '″' : ''}</button></div>`;
     }
   }
   html += `<div style="padding:8px 4px 0"><input class="testo" placeholder="Nota sull'esercizio" data-se-campo="nota" data-se="${esc(se.id)}" value="${esc(se.nota)}"></div>`;
@@ -617,6 +758,12 @@ function disegnaEsercizio(sess, se) {
   return html + `</div>`;
 }
 
+// Disegna gli esercizi a blocchi: le coppie di superserie stanno in un riquadro comune.
+function disegnaBlocchi(lista, disegnaUno) {
+  return blocchi(lista).map(b => b.length === 1 ? disegnaUno(b[0], '')
+    : `<div class="coppia"><div class="coppia-tit">${ic('link')} Superserie</div>${disegnaUno(b[0], 'A')}${disegnaUno(b[1], 'B')}</div>`).join('');
+}
+
 function disegnaSessione() {
   const sess = riga('Sessioni', S.sessioneId);
   if (!sess || sess.eliminato === SI) { S.schermata = 'oggi'; return disegnaOggi(); }
@@ -628,9 +775,9 @@ function disegnaSessione() {
     ${aperta ? `<button class="btn verde" data-azione="fine-sessione">Fine</button>` : `<button class="btn2" data-azione="chiudi-sessione">Chiudi</button>`}
   </div><div class="pila">`;
   const esercizi = eserciziDi(sess.id);
-  esercizi.forEach(se => { html += disegnaEsercizio(sess, se); });
+  html += disegnaBlocchi(esercizi, (se, lettera) => disegnaEsercizioSessione(sess, se, lettera));
   if (!esercizi.length) html += `<div class="vuoto-msg">Nessun esercizio. Aggiungine uno.</div>`;
-  html += `<button class="btn2 largo" data-azione="aggiungi-es">${ic('plus')} Esercizio</button>
+  html += `<button class="btn2 largo" data-azione="aggiungi-es" data-per="sessione">${ic('plus')} Esercizio</button>
     <textarea class="testo" placeholder="Nota sulla sessione" data-sess-campo="nota">${esc(sess.nota)}</textarea>
     <button class="btn2 pericolo largo" data-azione="elimina-sessione">${ic('trash')} ${aperta ? 'Annulla la sessione' : 'Elimina la sessione'}</button>
     <div class="stato-sync" data-stato-sync>${testoStatoSync()}</div></div>`;
@@ -654,7 +801,7 @@ function disegnaStorico() {
   const oggi = new Date(); const lun = lunedi(oggi);
   const giorniFatti = new Set(sessioni.map(s => String(s.inizio).slice(0, 10)));
   const nomi = ['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'];
-  let html = `<div class="top"><h1>Storico</h1></div><div class="pila"><div class="card settimana">`;
+  let html = testata('Storico') + `<div class="pila"><div class="card settimana">`;
   nomi.forEach((n, i) => {
     const g = new Date(lun); g.setDate(lun.getDate() + i);
     const chiave = ora(g).slice(0, 10);
@@ -662,14 +809,19 @@ function disegnaStorico() {
     html += `<div>${n}<div class="giorno ${classi}">${g.getDate()}</div></div>`;
   });
   html += `</div>`;
+  // Con tanto storico (per esempio dopo l'importazione da Strong) si mostrano le ultime 100.
+  const mostrate = sessioni.slice(0, S.storicoTutte ? sessioni.length : 100);
+  const perSettimana = new Map();
+  sessioni.forEach(s => { const k = lunedi(dataDa(s.inizio)).getTime(); perSettimana.set(k, (perSettimana.get(k) || 0) + 1); });
   let gruppo = null;
-  sessioni.forEach(s => {
+  mostrate.forEach(s => {
     const d = dataDa(s.inizio);
-    const settimane = Math.round((lun - lunedi(d)) / (7 * 864e5));
-    const nomeGruppo = settimane === 0 ? 'Questa settimana' : settimane === 1 ? 'Settimana scorsa' : 'Settimana dal ' + lunedi(d).toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
+    const lunS = lunedi(d);
+    const settimane = Math.round((lun - lunS) / (7 * 864e5));
+    const nomeGruppo = settimane === 0 ? 'Questa settimana' : settimane === 1 ? 'Settimana scorsa' : 'Settimana dal ' + lunS.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', year: 'numeric' });
     if (nomeGruppo !== gruppo) {
       gruppo = nomeGruppo;
-      const quante = sessioni.filter(x => lunedi(dataDa(x.inizio)).getTime() === lunedi(d).getTime()).length;
+      const quante = perSettimana.get(lunS.getTime());
       html += `<div class="etichetta">${nomeGruppo} · ${quante} ${quante === 1 ? 'seduta' : 'sedute'}</div>`;
     }
     const r = riepilogoSessione(s);
@@ -679,39 +831,129 @@ function disegnaStorico() {
       <span class="tenue" style="display:block;margin-top:4px">${fmtMinuti(r.durata)} · ${r.fatte} serie${r.volume ? ' · ' + fmtKg(r.volume) : ''}</span>
       ${elenco ? `<span style="display:block;font-size:13px;margin-top:6px;color:#cbd2dc">${esc(elenco)}</span>` : ''}</button>`;
   });
+  if (sessioni.length > mostrate.length) html += `<button class="btn2 largo" data-azione="storico-tutte">Mostra tutte (${sessioni.length})</button>`;
   if (!sessioni.length) html += `<div class="vuoto-msg">Le sessioni finite compariranno qui.</div>`;
   return html + `<p class="tenue" style="text-align:center">Grafici e statistiche arrivano nella fase 4.</p></div>`;
 }
 
-/* ---------- Esercizi (archivio, solo consultazione in fase 1) ---------- */
-function elencoEsercizi(filtro) {
+/* ---------- Esercizi e modelli (archivio) ---------- */
+function elencoEsercizi(filtro, conArchiviati = false) {
   const f = filtro.trim().toLowerCase();
-  return vivi('Esercizi').filter(e => e.archiviato !== SI && (!f || String(e.nome).toLowerCase().includes(f) || String(e.gruppo).toLowerCase().includes(f)))
-    .sort((a, b) => String(a.nome).localeCompare(String(b.nome), 'it'));
+  return vivi('Esercizi').filter(e => (conArchiviati || e.archiviato !== SI) && (!f || String(e.nome).toLowerCase().includes(f) || String(e.gruppo).toLowerCase().includes(f)))
+    .sort(perNome);
 }
 function disegnaArchivio() {
-  const lista = elencoEsercizi(S.ricercaArchivio);
-  let html = `<div class="top"><h1>Esercizi</h1></div><div class="pila">
-    <input class="testo" type="search" placeholder="Cerca un esercizio" data-ricerca="archivio" value="${esc(S.ricercaArchivio)}">
-    <div id="lista-archivio" class="pila">`;
-  html += righeArchivio(lista);
-  return html + `</div><p class="tenue" style="text-align:center">Modifica di esercizi e modelli: fase 2.</p></div>`;
+  const vista = S.vistaArchivio;
+  let html = testata('Esercizi') + `<div class="pila">
+    <div class="scelte" style="margin:0">
+      <button class="scelta ${vista === 'esercizi' ? 'si' : ''}" data-azione="vista-archivio" data-valore="esercizi">Esercizi</button>
+      <button class="scelta ${vista === 'modelli' ? 'si' : ''}" data-azione="vista-archivio" data-valore="modelli">Modelli</button></div>`;
+  if (vista === 'modelli') {
+    html += `<button class="btn2 largo" data-azione="nuovo-modello">${ic('plus')} Nuovo modello</button>`;
+    let cartella = null;
+    const modelli = modelliOrdinati();
+    modelli.forEach(m => {
+      if (m.cartella !== cartella) { cartella = m.cartella; html += `<div class="etichetta">${esc(cartella || 'Senza cartella')}</div>`; }
+      html += `<button class="card fila modello" data-azione="apri-modello" data-id="${esc(m.id)}">
+        <span><span style="display:block;font-size:16px">${esc(m.nome)}</span><span class="tenue">${vociDi(m.id).length} esercizi</span></span>${ic('chevron-right')}</button>`;
+    });
+    if (!modelli.length) html += `<div class="vuoto-msg">Nessun modello.</div>`;
+    return html + `</div>`;
+  }
+  html += `<input class="testo" type="search" placeholder="Cerca un esercizio" data-ricerca="archivio" value="${esc(S.ricercaArchivio)}">
+    <div class="riga-btn"><button class="btn2" data-azione="nuovo-esercizio">${ic('plus')} Nuovo esercizio</button>
+      <button class="btn2" data-azione="mostra-archiviati">${S.mostraArchiviati ? 'Nascondi archiviati' : 'Mostra archiviati'}</button></div>
+    <div id="lista-archivio" class="pila">${righeArchivio()}</div></div>`;
+  return html;
 }
-function righeArchivio(lista) {
+function righeArchivio() {
+  const lista = elencoEsercizi(S.ricercaArchivio, S.mostraArchiviati);
   if (!lista.length) return `<div class="vuoto-msg">Nessun esercizio trovato.</div>`;
-  return lista.map(e => `<div class="card"><div style="font-size:16px">${esc(e.nome)}</div>
-    <div class="tenue">${esc(TIPI_ES[e.tipo] || e.tipo)}${e.gruppo ? ' · ' + esc(e.gruppo) : ''}${e.attrezzo ? ' · ' + esc(e.attrezzo) : ''}${RIAB[e.area] ? ` <span class="tag">${esc(e.area)}</span>` : ''}</div></div>`).join('');
+  return lista.map(e => `<button class="card modello" data-azione="apri-esercizio" data-id="${esc(e.id)}">
+    <span style="display:block;font-size:16px">${esc(e.nome)}${e.archiviato === SI ? ' <span class="tenue">(archiviato)</span>' : ''}</span>
+    <span class="tenue">${esc(TIPI_ES[e.tipo] || e.tipo)}${e.gruppo ? ' · ' + esc(e.gruppo) : ''}${e.attrezzo ? ' · ' + esc(e.attrezzo) : ''}${RIAB[e.area] ? ` <span class="tag">${esc(e.area)}</span>` : ''}</span></button>`).join('');
+}
+
+/* ---------- Modulo di un esercizio (nuovo o da modificare) ---------- */
+function datalist(id, valori) {
+  return `<datalist id="${id}">${[...new Set(valori.filter(Boolean))].sort().map(v => `<option value="${esc(v)}">`).join('')}</datalist>`;
+}
+function disegnaFormEsercizio() {
+  const b = S.bozzaEs;
+  if (!b) { S.schermata = 'esercizi'; return disegnaArchivio(); }
+  const scelte = (campo, opzioni) => `<div class="scelte">${Object.entries(opzioni).map(([v, t]) =>
+    `<button class="scelta ${b[campo] === v ? 'si' : ''}" data-azione="bozza-scelta" data-campo="${campo}" data-valore="${v}">${t}</button>`).join('')}</div>`;
+  const tutti = vivi('Esercizi');
+  return testata(b.id ? 'Esercizio' : 'Nuovo esercizio', 'torna-esercizi') + `<div class="pila"><div class="card">
+    <div class="campo-modulo"><label for="f-nome">Nome</label><input class="testo" id="f-nome" value="${esc(b.nome)}"></div>
+    <div class="tenue">Tipo</div>${scelte('tipo', TIPI_ES)}
+    ${b.id && b.tipoOriginale && b.tipo !== b.tipoOriginale ? '<p class="tenue">Cambiare il tipo non modifica le serie già registrate.</p>' : ''}
+    <div class="tenue">Area</div>${scelte('area', AREE)}
+    <div class="campo-modulo"><label for="f-attrezzo">Attrezzo</label><input class="testo" id="f-attrezzo" list="l-attrezzi" value="${esc(b.attrezzo)}"></div>
+    <div class="campo-modulo"><label for="f-gruppo">Gruppo muscolare</label><input class="testo" id="f-gruppo" list="l-gruppi" value="${esc(b.gruppo)}"></div>
+    <div class="campo-modulo"><label for="f-recupero">Recupero predefinito (secondi, 0 = nessun timer)</label><input class="testo" id="f-recupero" inputmode="numeric" value="${esc(b.recupero_s)}"></div>
+    <div class="campo-modulo"><label for="f-nota">Nota</label><textarea class="testo" id="f-nota">${esc(b.nota)}</textarea></div>
+    <div class="campo-modulo"><label for="f-strong">Nomi in Strong (separati da «; »)</label><input class="testo" id="f-strong" value="${esc(b.nome_strong)}"></div>
+    <div class="tenue">Archiviato (nascosto dalla ricerca, resta nello storico)</div>${scelte('archiviato', { no: 'No', 'sì': 'Sì' })}
+    <p class="errore" id="f-errore" style="font-size:13px"></p>
+    <button class="btn largo" data-azione="salva-esercizio">Salva</button>
+    ${datalist('l-attrezzi', tutti.map(e => e.attrezzo))}${datalist('l-gruppi', tutti.map(e => e.gruppo))}
+  </div></div>`;
+}
+function leggiFormEsercizio() {
+  const b = S.bozzaEs;
+  b.nome = $('#f-nome').value; b.attrezzo = $('#f-attrezzo').value; b.gruppo = $('#f-gruppo').value;
+  b.recupero_s = $('#f-recupero').value; b.nota = $('#f-nota').value; b.nome_strong = $('#f-strong').value;
+}
+
+/* ---------- Modello (modifica) ---------- */
+function disegnaVoceModello(me, lettera) {
+  const es = riga('Esercizi', me.esercizio_id);
+  const tipo = tipoDi(es);
+  const serie = previsteDi(me.id);
+  const recEs = es ? num(es.recupero_s) : NaN;
+  let html = `<div class="card" style="padding:12px 8px">
+    <div class="fila" style="padding:0 4px 8px;align-items:flex-start"><div>
+      <div class="es-titolo">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + me.esercizio_id + ')')}</div>
+      ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}<span class="tenue">${esc(TIPI_ES[tipo])}</span>
+    </div><button class="icona" data-azione="menu-es" data-scheda="ModelliEsercizi" data-id="${esc(me.id)}" aria-label="Opzioni esercizio">${ic('dots')}</button></div>
+    <div class="riab-riga" style="grid-template-columns:84px minmax(0,1fr);padding:0 4px"><span class="tenue">Recupero (s)</span>
+      <input class="testo" inputmode="numeric" data-me-campo="recupero_s" data-id="${esc(me.id)}" value="${esc(fmtNum(me.recupero_s))}" placeholder="${isNaN(recEs) ? 'nessuno' : recEs + ' (dell\'esercizio)'}"></div>
+    <div style="padding:0 4px 8px"><input class="testo" placeholder="Indicazione per la sessione (es. lento in discesa)" data-me-campo="nota" data-id="${esc(me.id)}" value="${esc(me.nota)}"></div>`;
+  html += intestazioneSerie(tipo, false);
+  serie.forEach(s => { html += rigaSerie('ModelliSerie', tipo, serie, s, lettera, null); });
+  html += `<div class="riga-btn" style="padding:8px 4px 0">
+    <button class="btn2" style="font-size:14px" data-azione="aggiungi-serie" data-scheda="ModelliSerie" data-padre="${esc(me.id)}">${ic('plus')} Serie</button>
+    <button class="btn2" style="font-size:14px" data-azione="copia-precedente" data-scheda="ModelliSerie" data-padre="${esc(me.id)}">${ic('copy')} Copia precedente</button></div>`;
+  return html + `</div>`;
+}
+function disegnaModello() {
+  const m = riga('Modelli', S.modelloId);
+  if (!m || m.eliminato === SI) { S.schermata = 'esercizi'; return disegnaArchivio(); }
+  const voci = vociDi(m.id);
+  let html = testata('Modello', 'torna-modelli', `<button class="icona" data-azione="menu-modello" aria-label="Opzioni modello">${ic('dots')}</button>`) + `<div class="pila">
+    <div class="card">
+      <div class="campo-modulo"><label for="m-nome">Nome</label><input class="testo" id="m-nome" data-mod-campo="nome" value="${esc(m.nome)}"></div>
+      <div class="campo-modulo"><label for="m-cartella">Cartella</label><input class="testo" id="m-cartella" list="l-cartelle" data-mod-campo="cartella" value="${esc(m.cartella)}"></div>
+      <div class="campo-modulo"><label for="m-ordine">Ordine nella cartella</label><input class="testo" id="m-ordine" inputmode="numeric" data-mod-campo="ordine" value="${esc(fmtNum(m.ordine))}"></div>
+      <div class="campo-modulo" style="margin:0"><label for="m-nota">Nota</label><textarea class="testo" id="m-nota" data-mod-campo="nota">${esc(m.nota)}</textarea></div>
+      ${datalist('l-cartelle', vivi('Modelli').map(x => x.cartella))}
+    </div>`;
+  html += disegnaBlocchi(voci, disegnaVoceModello);
+  if (!voci.length) html += `<div class="vuoto-msg">Nessun esercizio nel modello.</div>`;
+  html += `<button class="btn2 largo" data-azione="aggiungi-es" data-per="modello">${ic('plus')} Esercizio</button>
+    <button class="btn largo" data-azione="avvia-modello" data-id="${esc(m.id)}">${ic('play')} Inizia una sessione</button></div>`;
+  return html;
 }
 
 /* ---------- Test ---------- */
 function disegnaTest() {
-  return `<div class="top"><h1>Test</h1></div><div class="vuoto-msg">La registrazione dei test (WBLT, heel raise, equilibrio, leg extension, step-down) arriva nella fase 4.</div>`;
+  return testata('Test') + `<div class="vuoto-msg">La registrazione dei test (WBLT, heel raise, equilibrio, leg extension, step-down) arriva nella fase 4.</div>`;
 }
 
 /* ---------- Impostazioni ---------- */
 function disegnaImpostazioni() {
-  return `<div class="top"><button class="icona" data-vai="oggi" aria-label="Indietro">${ic('arrow-left')}</button><h1 style="flex:1">Impostazioni</h1></div>
-  <div class="pila">
+  return testata('Impostazioni', 'torna-oggi') + `<div class="pila">
     <div class="card">
       <h2>Ponte con il foglio</h2>
       <div class="campo-modulo" style="margin-top:10px"><label for="imp-url">Indirizzo dell'app web (Apps Script)</label>
@@ -729,18 +971,167 @@ function disegnaImpostazioni() {
       <div class="riga-btn"><button class="btn2" data-azione="imp-sync">Sincronizza ora</button><button class="btn2" data-azione="imp-riscarica">Rileggi tutto</button></div>
     </div>
     <div class="card">
+      <h2>Storico di Strong</h2>
+      <p class="tenue" style="margin:8px 0">In Strong, dalle impostazioni, usa la voce per esportare i dati (export): ottieni un file CSV. Poi sceglilo qui. Prima di scrivere ti mostro un riepilogo. Le sessioni già importate non vengono ripetute.</p>
+      <button class="btn2 largo" data-azione="scegli-csv">${ic('upload')} Scegli il file CSV</button>
+      <input type="file" id="file-strong" accept=".csv,text/csv,text/comma-separated-values,text/plain" hidden>
+    </div>
+    <div class="card">
       <h2>Copia di sicurezza</h2>
       <p class="tenue" style="margin:8px 0">Scarica in un file tutti i dati presenti sul telefono (senza il token).</p>
       <button class="btn2 largo" data-azione="imp-esporta">Esporta i dati</button>
     </div>
-    <p class="tenue" style="text-align:center">Unità di peso: kg · Gym, fase 1</p>
+    <p class="tenue" style="text-align:center">Unità di peso: kg · Gym, fase 2</p>
   </div>`;
+}
+
+/* ======================= Importazione da Strong ======================= */
+
+function leggiCSV(testo) {
+  testo = testo.replace(/^﻿/, '');
+  const fineRiga = testo.indexOf('\n');
+  const prima = fineRiga === -1 ? testo : testo.slice(0, fineRiga);
+  const sep = (prima.match(/;/g) || []).length > (prima.match(/,/g) || []).length ? ';' : ',';
+  const righe = [];
+  let campo = '', r = [], virgolette = false;
+  for (let i = 0; i < testo.length; i++) {
+    const c = testo[i];
+    if (virgolette) {
+      if (c === '"') { if (testo[i + 1] === '"') { campo += '"'; i++; } else virgolette = false; }
+      else campo += c;
+    } else if (c === '"') virgolette = true;
+    else if (c === sep) { r.push(campo); campo = ''; }
+    else if (c === '\n') { r.push(campo); righe.push(r); r = []; campo = ''; }
+    else if (c !== '\r') campo += c;
+  }
+  if (campo !== '' || r.length) { r.push(campo); righe.push(r); }
+  return righe.filter(x => x.some(v => v.trim() !== ''));
+}
+
+function normalizzaData(t) {
+  const m = String(t).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  return `${m[1]}-${m[2]}-${m[3]} ${m[4].padStart(2, '0')}:${m[5]}:${m[6] || '00'}`;
+}
+function secondiDaDurata(t) {
+  const s = String(t || '');
+  const h = s.match(/(\d+)\s*h/), m = s.match(/(\d+)\s*m(?!s)/), sec = s.match(/(\d+)\s*s/);
+  return (h ? +h[1] * 3600 : 0) + (m ? +m[1] * 60 : 0) + (sec ? +sec[1] : 0);
+}
+
+/** Analizza il CSV di Strong senza scrivere nulla. Restituisce le righe da salvare e un riepilogo. */
+function analizzaStrong(testo) {
+  const righe = leggiCSV(testo);
+  if (righe.length < 2) throw new Error('il file è vuoto');
+  const intest = righe[0].map(h => h.trim());
+  const col = nome => intest.indexOf(nome);
+  const servono = ['Date', 'Workout Name', 'Exercise Name', 'Set Order', 'Weight', 'Reps'];
+  const mancano = servono.filter(n => col(n) === -1);
+  if (mancano.length) throw new Error('mancano le colonne: ' + mancano.join(', '));
+  const val = (r, nome) => (col(nome) === -1 ? '' : String(r[col(nome)] ?? '').trim());
+
+  // Esercizi conosciuti, cercati per nome di Strong (anche più nomi separati da «;»).
+  const perNomeStrong = new Map();
+  vivi('Esercizi').forEach(e => String(e.nome_strong || '').split(';').map(n => n.trim().toLowerCase()).filter(Boolean)
+    .forEach(n => { if (!perNomeStrong.has(n)) perNomeStrong.set(n, e.id); }));
+  // Sessioni già presenti (anche eliminate): stessa ora di inizio e stesso titolo.
+  const giaPresenti = new Set([...D.Sessioni.values()].map(s => normalizzaData(s.inizio) + '|' + String(s.titolo).trim()));
+
+  const sessioni = new Map(); // chiave -> { sess, esercizi: Map(nome -> {se, serie[]}) }
+  const nuoviEsercizi = new Map();
+  let saltate = 0, distanze = 0, lbs = 0, gia = 0;
+  const giaViste = new Set();
+  for (let i = 1; i < righe.length; i++) {
+    const r = righe[i];
+    const inizio = normalizzaData(val(r, 'Date'));
+    const titolo = val(r, 'Workout Name') || 'Allenamento';
+    const nomeEs = val(r, 'Exercise Name');
+    if (!inizio || !nomeEs) { saltate++; continue; }
+    const chiave = inizio + '|' + titolo;
+    if (giaPresenti.has(chiave)) { if (!giaViste.has(chiave)) { giaViste.add(chiave); gia++; } continue; }
+    const ordine = val(r, 'Set Order').toUpperCase();
+    let tipoSerie;
+    if (/^\d+$/.test(ordine) || ordine === 'D') tipoSerie = 'normale';
+    else if (ordine === 'W') tipoSerie = 'riscaldamento';
+    else if (ordine === 'F') tipoSerie = 'cedimento';
+    else { saltate++; continue; } // per esempio le righe del timer di riposo
+
+    let gruppo = sessioni.get(chiave);
+    if (!gruppo) {
+      const dur = secondiDaDurata(val(r, 'Workout Duration'));
+      const fine = dur ? ora(new Date(dataDa(inizio).getTime() + dur * 1000)) : inizio;
+      gruppo = { sess: nuovaRiga('Sessioni', { id: nuovoId('SE'), titolo, modello_id: '', inizio, fine, nota: '' }), esercizi: new Map() };
+      sessioni.set(chiave, gruppo);
+    }
+    const notaSess = val(r, 'Workout Notes');
+    if (notaSess && !gruppo.sess.nota) gruppo.sess.nota = notaSess;
+
+    let esId = perNomeStrong.get(nomeEs.toLowerCase());
+    if (!esId) {
+      let nuovo = nuoviEsercizi.get(nomeEs.toLowerCase());
+      if (!nuovo) {
+        nuovo = nuovaRiga('Esercizi', { id: nuovoId('EX'), nome: nomeEs, nome_strong: nomeEs, tipo: 'peso_rip', area: 'altro', recupero_s: 0, origine: 'app', archiviato: NO });
+        nuoviEsercizi.set(nomeEs.toLowerCase(), nuovo);
+      }
+      esId = nuovo.id;
+    }
+    let es = gruppo.esercizi.get(esId);
+    if (!es) {
+      es = { se: nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: gruppo.sess.id, posizione: gruppo.esercizi.size + 1, esercizio_id: esId }), serie: [], note: [] };
+      gruppo.esercizi.set(esId, es);
+    }
+    const nota = val(r, 'Notes');
+    if (nota && !es.note.includes(nota)) es.note.push(nota);
+
+    let peso = leggiNum(val(r, 'Weight'));
+    if (peso === null) peso = '';
+    if (peso !== '' && /lb/i.test(val(r, 'Weight Unit'))) { peso = Math.round(peso * 0.45359237 * 100) / 100; lbs++; }
+    let rip = leggiNum(val(r, 'Reps')); if (rip === null) rip = '';
+    let sec = leggiNum(val(r, 'Seconds')); if (sec === null || sec === 0) sec = '';
+    if (rip === 0 && sec !== '') rip = '';
+    let rpe = leggiNum(val(r, 'RPE')); if (rpe === null || rpe === 0) rpe = '';
+    if (leggiNum(val(r, 'Distance'))) distanze++;
+    es.serie.push(nuovaRiga('Serie', { id: nuovoId('SR'), sessione_esercizio_id: es.se.id, posizione: es.serie.length + 1,
+      tipo: tipoSerie, lato: 'entrambi', peso_kg: peso, rip: rip === '' ? '' : Math.round(rip), durata_s: sec === '' ? '' : Math.round(sec), rpe, fatta: SI }));
+  }
+
+  const daSalvare = [];
+  nuoviEsercizi.forEach(e => daSalvare.push(['Esercizi', e]));
+  let nSerie = 0;
+  sessioni.forEach(g => {
+    daSalvare.push(['Sessioni', g.sess]);
+    g.esercizi.forEach(es => {
+      es.se.nota = es.note.join('\n'); // le note restano testo: nessuna interpretazione
+      daSalvare.push(['SessioniEsercizi', es.se]);
+      es.serie.forEach(s => { daSalvare.push(['Serie', s]); nSerie++; });
+    });
+  });
+  return {
+    daSalvare, sessioni: sessioni.size, serie: nSerie, gia, saltate, distanze, lbs,
+    nuovi: [...nuoviEsercizi.values()].map(e => e.nome).sort((a, b) => a.localeCompare(b, 'it')),
+  };
+}
+
+function foglioRiepilogoImport(r) {
+  const nomi = r.nuovi.slice(0, 40).map(esc).join('<br>') + (r.nuovi.length > 40 ? `<br>… e altri ${r.nuovi.length - 40}` : '');
+  return `<h2>Importazione da Strong</h2>
+    <div class="riepilogo" style="margin:14px 0"><div><b>${r.sessioni}</b><span class="tenue">sessioni</span></div>
+      <div><b>${r.serie}</b><span class="tenue">serie</span></div><div><b>${r.nuovi.length}</b><span class="tenue">esercizi nuovi</span></div></div>
+    ${r.gia ? `<p class="tenue">${r.gia} ${r.gia === 1 ? 'sessione era già importata e viene saltata' : 'sessioni erano già importate e vengono saltate'}.</p>` : ''}
+    ${r.saltate ? `<p class="tenue">${r.saltate} righe saltate (senza data o esercizio, oppure righe del timer di riposo).</p>` : ''}
+    ${r.distanze ? `<p class="tenue">${r.distanze} serie hanno una distanza: il foglio non ha una colonna per la distanza, quindi non viene importata.</p>` : ''}
+    ${r.lbs ? `<p class="tenue">${r.lbs} pesi erano in libbre e sono stati convertiti in kg.</p>` : ''}
+    ${r.nuovi.length ? `<p class="tenue">Esercizi senza corrispondenza in «nome_strong»: verranno creati come «peso e ripetizioni», area «altro». Potrai correggerli in Esercizi.</p>
+      <div class="card" style="max-height:30vh;overflow:auto;font-size:14px">${nomi}</div>` : ''}
+    <p class="errore" id="imp-errore" style="font-size:13px"></p>
+    <div class="riga-btn" style="margin-top:12px"><button class="btn2" data-azione="chiudi-foglio">Annulla</button>
+      ${r.sessioni ? `<button class="btn" data-azione="conferma-import">Importa</button>` : ''}</div>`;
 }
 
 /* ======================= Fogli dal basso ======================= */
 
 function apriFoglio(html) { $('#foglio').innerHTML = html; $('#velo').hidden = false; }
-function chiudiFoglio() { $('#velo').hidden = true; $('#foglio').innerHTML = ''; S.foglio = null; }
+function chiudiFoglio() { $('#velo').hidden = true; $('#foglio').innerHTML = ''; }
 $('#velo').addEventListener('click', e => { if (e.target.id === 'velo' && !conto) chiudiFoglio(); });
 
 let avvisoTimeout = null, avvisoAzione = null;
@@ -757,14 +1148,14 @@ $('#avviso-azione').addEventListener('click', async () => {
   if (f) { await f(); disegna(); }
 });
 
-function foglioScelteSerie(s) {
+function foglioScelteSerie(scheda, s) {
   const gruppo = (nome, opzioni, attuale) => `<div class="scelte">${Object.entries(opzioni).map(([v, t]) =>
-    `<button class="scelta ${attuale === v ? 'si' : ''}" data-azione="serie-${nome}" data-serie="${esc(s.id)}" data-valore="${v}">${t}</button>`).join('')}</div>`;
+    `<button class="scelta ${attuale === v ? 'si' : ''}" data-azione="serie-${nome}" data-scheda="${scheda}" data-id="${esc(s.id)}" data-valore="${v}">${t}</button>`).join('')}</div>`;
   return `<h2>Serie</h2>
     <div class="tenue">Tipo</div>${gruppo('tipo', TIPI_SERIE, s.tipo || 'normale')}
     <div class="tenue">Lato</div>${gruppo('lato', LATI, s.lato || 'entrambi')}
-    <button class="voce" data-azione="serie-copia" data-serie="${esc(s.id)}">${ic('copy')} Duplica questa serie</button>
-    <button class="voce" data-azione="serie-elimina" data-serie="${esc(s.id)}" style="color:var(--rosso)">${ic('trash')} Elimina la serie</button>`;
+    <button class="voce" data-azione="serie-copia" data-scheda="${scheda}" data-id="${esc(s.id)}">${ic('copy')} Duplica questa serie</button>
+    <button class="voce" data-azione="serie-elimina" data-scheda="${scheda}" data-id="${esc(s.id)}" style="color:var(--rosso)">${ic('trash')} Elimina la serie</button>`;
 }
 
 function foglioSceltaEsercizio() {
@@ -786,7 +1177,7 @@ function foglioNuovoEsercizio() {
   return `<h2>Nuovo esercizio</h2>
     <div class="campo-modulo"><label for="nes-nome">Nome</label><input class="testo" id="nes-nome" value="${esc(n.nome)}"></div>
     <div class="tenue">Tipo</div>${gruppo('tipo', TIPI_ES)}
-    <div class="tenue">Area</div>${gruppo('area', { altro: 'Altro', ginocchio: 'Ginocchio', caviglia: 'Caviglia' })}
+    <div class="tenue">Area</div>${gruppo('area', AREE)}
     <div class="campo-modulo"><label for="nes-rec">Recupero (secondi, 0 = nessun timer)</label><input class="testo" id="nes-rec" inputmode="numeric" value="${esc(n.recupero_s)}"></div>
     <p class="tenue errore" id="nes-errore"></p>
     <div class="riga-btn"><button class="btn2" data-azione="aggiungi-es">Indietro</button><button class="btn" data-azione="salva-nuovo-es">Crea e aggiungi</button></div>`;
@@ -794,20 +1185,17 @@ function foglioNuovoEsercizio() {
 
 /* ======================= Azioni ======================= */
 
-async function rinumera(scheda, righe) {
-  const cambiate = [];
-  righe.forEach((r, i) => { if (num(r.posizione) !== i + 1) { r.posizione = i + 1; cambiate.push([scheda, r]); } });
-  if (cambiate.length) await salva(...cambiate);
-}
-
 async function creaSessioneDaModello(modello) {
   const sess = nuovaRiga('Sessioni', { id: nuovoId('SE'), titolo: modello.nome, modello_id: modello.id, inizio: ora(), fine: '' });
   const daSalvare = [['Sessioni', sess]];
   // Copia del modello: cambiare il modello dopo non tocca questa sessione.
-  vivi('ModelliEsercizi').filter(m => m.modello_id === modello.id).sort(perPosizione).forEach((me, i) => {
-    const se = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: sess.id, posizione: i + 1, esercizio_id: me.esercizio_id, superserie_id: me.superserie_id || '' });
+  const voci = vociDi(modello.id);
+  const nuoviSS = {};
+  voci.forEach((me, i) => {
+    const ss = compagno(voci, me) ? (nuoviSS[me.superserie_id] = nuoviSS[me.superserie_id] || nuovoId('SS')) : '';
+    const se = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: sess.id, posizione: i + 1, esercizio_id: me.esercizio_id, superserie_id: ss });
     daSalvare.push(['SessioniEsercizi', se]);
-    const previste = vivi('ModelliSerie').filter(ms => ms.modello_esercizio_id === me.id).sort(perPosizione);
+    const previste = previsteDi(me.id);
     (previste.length ? previste : [{}]).forEach((ms, j) => {
       daSalvare.push(['Serie', nuovaRiga('Serie', {
         id: nuovoId('SR'), sessione_esercizio_id: se.id, posizione: j + 1,
@@ -816,20 +1204,26 @@ async function creaSessioneDaModello(modello) {
       })]);
     });
   });
-  await salva(...daSalvare);
+  await salvaLista(daSalvare);
   return sess;
 }
 
 async function aggiungiEsercizio(esercizioId) {
-  const sess = riga('Sessioni', S.sessioneId);
-  const esistenti = eserciziDi(sess.id);
-  const se = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: sess.id, posizione: esistenti.length + 1, esercizio_id: esercizioId });
-  const s = nuovaRiga('Serie', { id: nuovoId('SR'), sessione_esercizio_id: se.id, posizione: 1, tipo: 'normale', lato: 'entrambi', fatta: NO });
-  await salva(['SessioniEsercizi', se], ['Serie', s]);
+  let nuova;
+  if (S.sceltaPer === 'modello') {
+    const voci = vociDi(S.modelloId);
+    nuova = nuovaRiga('ModelliEsercizi', { id: nuovoId('ME'), modello_id: S.modelloId, posizione: voci.length + 1, esercizio_id: esercizioId, recupero_s: '' });
+    const ms = nuovaRiga('ModelliSerie', { id: nuovoId('MS'), modello_esercizio_id: nuova.id, posizione: 1, tipo: 'normale', lato: 'entrambi' });
+    await salva(['ModelliEsercizi', nuova], ['ModelliSerie', ms]);
+  } else {
+    const esistenti = eserciziDi(S.sessioneId);
+    nuova = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: S.sessioneId, posizione: esistenti.length + 1, esercizio_id: esercizioId });
+    const s = nuovaRiga('Serie', { id: nuovoId('SR'), sessione_esercizio_id: nuova.id, posizione: 1, tipo: 'normale', lato: 'entrambi', fatta: NO });
+    await salva(['SessioniEsercizi', nuova], ['Serie', s]);
+  }
   chiudiFoglio();
   disegna();
-  const card = document.querySelector(`[data-se="${CSS.escape(se.id)}"]`);
-  if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
 }
 
 function avvisoSessioneGiaAperta() {
@@ -837,14 +1231,45 @@ function avvisoSessioneGiaAperta() {
     <button class="btn largo" data-azione="riprendi">Riprendi</button>`);
 }
 
+async function eliminaRiga(scheda, id) {
+  const r = riga(scheda, id);
+  r.eliminato = SI; await salva([scheda, r]);
+  disegna();
+  mostraAvviso(scheda.includes('Serie') ? 'Serie eliminata' : 'Eliminato', async () => { r.eliminato = NO; await salva([scheda, r]); });
+}
+
+async function duplicaModello(m) {
+  const copia = nuovaRiga('Modelli', Object.assign(soloSchema('Modelli', m), { id: nuovoId('MOD'), nome: m.nome + ' (copia)', eliminato: NO }));
+  const daSalvare = [['Modelli', copia]];
+  const voci = vociDi(m.id);
+  const nuoviSS = {};
+  voci.forEach(me => {
+    const ss = compagno(voci, me) ? (nuoviSS[me.superserie_id] = nuoviSS[me.superserie_id] || nuovoId('SS')) : '';
+    const nme = nuovaRiga('ModelliEsercizi', Object.assign(soloSchema('ModelliEsercizi', me), { id: nuovoId('ME'), modello_id: copia.id, superserie_id: ss, eliminato: NO }));
+    daSalvare.push(['ModelliEsercizi', nme]);
+    previsteDi(me.id).forEach(ms => daSalvare.push(['ModelliSerie',
+      nuovaRiga('ModelliSerie', Object.assign(soloSchema('ModelliSerie', ms), { id: nuovoId('MS'), modello_esercizio_id: nme.id, eliminato: NO }))]));
+  });
+  await salvaLista(daSalvare);
+  return copia;
+}
+
+function nomeVoce(scheda, r) {
+  const es = riga('Esercizi', r.esercizio_id);
+  return es ? es.nome : 'Esercizio';
+}
+
 const AZIONI = {
+  'torna-oggi': () => vai('oggi'),
+  'torna-esercizi': () => vai('esercizi', { vistaArchivio: 'esercizi' }),
+  'torna-modelli': () => vai('esercizi', { vistaArchivio: 'modelli' }),
   'riprendi': () => { chiudiFoglio(); const s = sessioneInCorso(); if (s) { vai('sessione', { sessioneId: s.id }); controllaWakeLock(); } },
   'nuova-vuota': async () => {
     if (sessioneInCorso()) return avvisoSessioneGiaAperta();
     const sess = nuovaRiga('Sessioni', { id: nuovoId('SE'), titolo: 'Allenamento', modello_id: '', inizio: ora(), fine: '' });
     await salva(['Sessioni', sess]);
     vai('sessione', { sessioneId: sess.id }); controllaWakeLock();
-    S.ricerca = ''; apriFoglio(foglioSceltaEsercizio());
+    S.ricerca = ''; S.sceltaPer = 'sessione'; apriFoglio(foglioSceltaEsercizio());
   },
   'avvia-modello': async el => {
     if (sessioneInCorso()) return avvisoSessioneGiaAperta();
@@ -853,6 +1278,7 @@ const AZIONI = {
   },
   'apri-sessione': el => vai('sessione', { sessioneId: el.dataset.id }),
   'chiudi-sessione': () => vai('storico'),
+  'storico-tutte': () => { S.storicoTutte = true; disegna(); },
   'rinomina-sessione': () => {
     const sess = riga('Sessioni', S.sessioneId);
     apriFoglio(`<h2>Titolo della sessione</h2><input class="testo" id="titolo-sess" value="${esc(sess.titolo)}" style="margin-bottom:10px">
@@ -899,74 +1325,142 @@ const AZIONI = {
     vai(eraAperta ? 'oggi' : 'storico');
     mostraAvviso('Sessione eliminata', async () => { sess.eliminato = NO; await salva(['Sessioni', sess]); controllaWakeLock(); });
   },
+
+  /* --- Serie (della sessione o previste nel modello) --- */
   'spunta': async el => {
-    const s = riga('Serie', el.dataset.serie);
+    const s = riga('Serie', el.dataset.id);
     s.fatta = s.fatta === SI ? NO : SI;
     await salva(['Serie', s]);
-    const r = document.querySelector(`[data-riga-serie="${CSS.escape(s.id)}"]`);
+    const r = document.querySelector(`.serie[data-id="${CSS.escape(s.id)}"]`);
     if (r) r.classList.toggle('fatta', s.fatta === SI);
-    const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
     if (s.fatta === SI) {
       if (navigator.vibrate) navigator.vibrate(30);
-      if (sessioneAperta(riga('Sessioni', se.sessione_id))) avviaTimer(recuperoDi(se));
+      timerDopoSerie(s);
     }
-    const es = riga('Esercizi', se.esercizio_id);
+    const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
+    const es = se && riga('Esercizi', se.esercizio_id);
     if (es && (es.tipo === 'durata' || es.tipo === 'peso_durata')) disegna(); // aggiorna «Avvia serie»
   },
-  'menu-serie': el => apriFoglio(foglioScelteSerie(riga('Serie', el.dataset.serie))),
-  'serie-tipo': async el => { const s = riga('Serie', el.dataset.serie); s.tipo = el.dataset.valore; await salva(['Serie', s]); chiudiFoglio(); disegna(); },
-  'serie-lato': async el => { const s = riga('Serie', el.dataset.serie); s.lato = el.dataset.valore; await salva(['Serie', s]); chiudiFoglio(); disegna(); },
+  'usa-precedente': async el => {
+    const s = riga('Serie', el.dataset.id);
+    const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
+    const tipo = tipoDi(riga('Esercizi', se.esercizio_id));
+    const campi = { peso_kg: 'peso', rip: 'rip', durata_s: 'durata' };
+    COLONNE_TIPO[tipo].forEach(([c]) => {
+      const reale = c === 'durata_min' ? 'durata_s' : c;
+      const v = el.dataset[campi[reale]];
+      if (v !== undefined && v !== '') s[reale] = Number(v);
+    });
+    await salva(['Serie', s]); disegna();
+  },
+  'menu-serie': el => apriFoglio(foglioScelteSerie(el.dataset.scheda, riga(el.dataset.scheda, el.dataset.id))),
+  'serie-tipo': async el => { const s = riga(el.dataset.scheda, el.dataset.id); s.tipo = el.dataset.valore; await salva([el.dataset.scheda, s]); chiudiFoglio(); disegna(); },
+  'serie-lato': async el => { const s = riga(el.dataset.scheda, el.dataset.id); s.lato = el.dataset.valore; await salva([el.dataset.scheda, s]); chiudiFoglio(); disegna(); },
   'serie-copia': async el => {
-    const s = riga('Serie', el.dataset.serie);
-    const lista = serieDi(s.sessione_esercizio_id);
-    const copia = nuovaRiga('Serie', Object.assign(soloSchema('Serie', s), { id: nuovoId('SR'), fatta: NO, eliminato: NO }));
+    const scheda = el.dataset.scheda;
+    const s = riga(scheda, el.dataset.id);
+    const lista = fratelliDi(scheda, s);
+    const copia = nuovaRiga(scheda, Object.assign(soloSchema(scheda, s), { id: nuovoId(scheda === 'Serie' ? 'SR' : 'MS'), eliminato: NO }));
+    if (scheda === 'Serie') copia.fatta = NO;
     lista.splice(lista.indexOf(s) + 1, 0, copia);
     lista.forEach((r, i) => { r.posizione = i + 1; });
-    await salva(...lista.map(r => ['Serie', r]));
+    await salvaLista(lista.map(r => [scheda, r]));
     chiudiFoglio(); disegna();
   },
-  'serie-elimina': el => { chiudiFoglio(); return eliminaSerie(el.dataset.serie); },
+  'serie-elimina': el => { chiudiFoglio(); return eliminaRiga(el.dataset.scheda, el.dataset.id); },
   'aggiungi-serie': async el => {
-    const lista = serieDi(el.dataset.se);
+    const scheda = el.dataset.scheda;
+    const lista = figli(scheda, el.dataset.padre);
     const ultima = lista[lista.length - 1];
-    const nuova = nuovaRiga('Serie', { id: nuovoId('SR'), sessione_esercizio_id: el.dataset.se, posizione: lista.length + 1,
-      tipo: ultima && ultima.tipo !== 'riscaldamento' ? ultima.tipo : 'normale', lato: ultima ? ultima.lato : 'entrambi', fatta: NO });
-    await salva(['Serie', nuova]); disegna();
+    // Se l'ultima era per un lato, la nuova va sull'altro lato (le serie per lato si alternano).
+    const lato = !ultima ? 'entrambi' : ultima.lato === 'dx' ? 'sx' : ultima.lato === 'sx' ? 'dx' : ultima.lato;
+    const nuova = nuovaRiga(scheda, { id: nuovoId(scheda === 'Serie' ? 'SR' : 'MS'), [PADRE[scheda]]: el.dataset.padre, posizione: lista.length + 1,
+      tipo: ultima && ultima.tipo !== 'riscaldamento' ? ultima.tipo : 'normale', lato });
+    if (scheda === 'Serie') nuova.fatta = NO;
+    await salva([scheda, nuova]); disegna();
   },
   'copia-precedente': async el => {
-    const lista = serieDi(el.dataset.se);
+    const scheda = el.dataset.scheda;
+    const lista = figli(scheda, el.dataset.padre);
     const ultima = lista[lista.length - 1];
-    const nuova = nuovaRiga('Serie', ultima
-      ? Object.assign(soloSchema('Serie', ultima), { id: nuovoId('SR'), posizione: lista.length + 1, fatta: NO, eliminato: NO })
-      : { id: nuovoId('SR'), sessione_esercizio_id: el.dataset.se, posizione: 1, tipo: 'normale', lato: 'entrambi', fatta: NO });
-    await salva(['Serie', nuova]); disegna();
+    const nuova = nuovaRiga(scheda, ultima
+      ? Object.assign(soloSchema(scheda, ultima), { id: nuovoId(scheda === 'Serie' ? 'SR' : 'MS'), posizione: lista.length + 1, eliminato: NO })
+      : { id: nuovoId(scheda === 'Serie' ? 'SR' : 'MS'), [PADRE[scheda]]: el.dataset.padre, posizione: 1, tipo: 'normale', lato: 'entrambi' });
+    if (scheda === 'Serie') nuova.fatta = NO;
+    await salva([scheda, nuova]); disegna();
   },
-  'avvia-durata': el => avviaConto(el.dataset.serie),
+  'avvia-durata': el => avviaConto(el.dataset.id),
   'conto-ferma': () => chiudiConto(true),
   'conto-annulla': () => chiudiConto(false),
+
+  /* --- Esercizi dentro una sessione o un modello --- */
   'menu-es': el => {
-    const se = riga('SessioniEsercizi', el.dataset.se);
-    const es = riga('Esercizi', se.esercizio_id);
-    apriFoglio(`<h2>${esc(es ? es.nome : 'Esercizio')}</h2>
-      <button class="voce" data-azione="sposta-es" data-se="${esc(se.id)}" data-valore="-1">${ic('arrow-up')} Sposta su</button>
-      <button class="voce" data-azione="sposta-es" data-se="${esc(se.id)}" data-valore="1">${ic('arrow-down')} Sposta giù</button>
-      <button class="voce" data-azione="rimuovi-es" data-se="${esc(se.id)}" style="color:var(--rosso)">${ic('trash')} Rimuovi dalla sessione</button>
-      <p class="tenue">Superserie: arrivano nella fase 2.</p>`);
+    const scheda = el.dataset.scheda;
+    const r = riga(scheda, el.dataset.id);
+    const comp = compagno(fratelliDi(scheda, r), r);
+    const attr = `data-scheda="${scheda}" data-id="${esc(r.id)}"`;
+    apriFoglio(`<h2>${esc(nomeVoce(scheda, r))}</h2>
+      <button class="voce" data-azione="sposta-es" ${attr} data-valore="-1">${ic('arrow-up')} Sposta su</button>
+      <button class="voce" data-azione="sposta-es" ${attr} data-valore="1">${ic('arrow-down')} Sposta giù</button>
+      ${comp ? `<button class="voce" data-azione="scollega" ${attr}>${ic('unlink')} Scollega la superserie</button>`
+        : `<button class="voce" data-azione="collega-scegli" ${attr}>${ic('link')} Collega in superserie</button>`}
+      <button class="voce" data-azione="rimuovi-es" ${attr} style="color:var(--rosso)">${ic('trash')} Rimuovi</button>`);
   },
   'sposta-es': async el => {
-    const se = riga('SessioniEsercizi', el.dataset.se);
-    const lista = eserciziDi(se.sessione_id);
-    const i = lista.indexOf(se), j = i + Number(el.dataset.valore);
-    if (j >= 0 && j < lista.length) { [lista[i], lista[j]] = [lista[j], lista[i]]; await rinumera('SessioniEsercizi', lista); }
+    const scheda = el.dataset.scheda;
+    const r = riga(scheda, el.dataset.id);
+    const bl = blocchi(fratelliDi(scheda, r));
+    const i = bl.findIndex(b => b.includes(r)), j = i + Number(el.dataset.valore);
+    if (j >= 0 && j < bl.length) {
+      [bl[i], bl[j]] = [bl[j], bl[i]];
+      const cambiate = [];
+      bl.flat().forEach((x, k) => { if (num(x.posizione) !== k + 1) { x.posizione = k + 1; cambiate.push([scheda, x]); } });
+      await salvaLista(cambiate);
+    }
+    chiudiFoglio(); disegna();
+  },
+  'collega-scegli': el => {
+    const scheda = el.dataset.scheda;
+    const r = riga(scheda, el.dataset.id);
+    const lista = fratelliDi(scheda, r);
+    const liberi = lista.filter(x => x !== r && !compagno(lista, x));
+    apriFoglio(`<h2>Superserie con…</h2>
+      ${liberi.length ? liberi.map(x => `<button class="voce" data-azione="collega" data-scheda="${scheda}" data-id="${esc(r.id)}" data-altro="${esc(x.id)}">${ic('link')} ${esc(nomeVoce(scheda, x))}</button>`).join('')
+        : '<p class="tenue">Non ci sono altri esercizi liberi da collegare.</p>'}`);
+  },
+  'collega': async el => {
+    const scheda = el.dataset.scheda;
+    const a = riga(scheda, el.dataset.id), b = riga(scheda, el.dataset.altro);
+    const id = nuovoId('SS');
+    a.superserie_id = id; b.superserie_id = id;
+    // B si sposta subito dopo A.
+    const lista = fratelliDi(scheda, a).filter(x => x !== b);
+    lista.splice(lista.indexOf(a) + 1, 0, b);
+    lista.forEach((x, k) => { x.posizione = k + 1; });
+    await salvaLista(lista.map(x => [scheda, x]));
+    chiudiFoglio(); disegna();
+  },
+  'scollega': async el => {
+    const scheda = el.dataset.scheda;
+    const a = riga(scheda, el.dataset.id);
+    const b = compagno(fratelliDi(scheda, a), a);
+    a.superserie_id = '';
+    const daSalvare = [[scheda, a]];
+    if (b) { b.superserie_id = ''; daSalvare.push([scheda, b]); }
+    await salvaLista(daSalvare);
     chiudiFoglio(); disegna();
   },
   'rimuovi-es': async el => {
-    const se = riga('SessioniEsercizi', el.dataset.se);
-    se.eliminato = SI; await salva(['SessioniEsercizi', se]);
+    const scheda = el.dataset.scheda;
+    const r = riga(scheda, el.dataset.id);
+    r.eliminato = SI; await salva([scheda, r]);
     chiudiFoglio(); disegna();
-    mostraAvviso('Esercizio rimosso', async () => { se.eliminato = NO; await salva(['SessioniEsercizi', se]); });
+    mostraAvviso('Esercizio rimosso', async () => { r.eliminato = NO; await salva([scheda, r]); });
   },
-  'aggiungi-es': () => { S.ricerca = ''; apriFoglio(foglioSceltaEsercizio()); },
+  'aggiungi-es': el => {
+    if (el.dataset.per) S.sceltaPer = el.dataset.per;
+    S.ricerca = ''; apriFoglio(foglioSceltaEsercizio());
+  },
   'scegli-es': el => aggiungiEsercizio(el.dataset.id),
   'nuovo-es': () => { S.nuovoEs = { nome: S.ricerca, tipo: 'peso_rip', area: 'altro', recupero_s: '90' }; apriFoglio(foglioNuovoEsercizio()); },
   'nuovo-es-scelta': el => {
@@ -983,6 +1477,64 @@ const AZIONI = {
     await salva(['Esercizi', es]);
     await aggiungiEsercizio(es.id);
   },
+
+  /* --- Archivio: esercizi e modelli --- */
+  'vista-archivio': el => { S.vistaArchivio = el.dataset.valore; disegna(); },
+  'mostra-archiviati': () => { S.mostraArchiviati = !S.mostraArchiviati; disegna(); },
+  'nuovo-esercizio': () => vai('esercizio', { bozzaEs: { id: '', nome: S.ricercaArchivio, tipo: 'peso_rip', area: 'altro', attrezzo: '', gruppo: '', recupero_s: '90', nota: '', nome_strong: '', archiviato: NO } }),
+  'apri-esercizio': el => {
+    const e = riga('Esercizi', el.dataset.id);
+    vai('esercizio', { bozzaEs: Object.assign(soloSchema('Esercizi', e), { recupero_s: fmtNum(e.recupero_s), tipoOriginale: e.tipo, archiviato: e.archiviato === SI ? SI : NO }) });
+  },
+  'bozza-scelta': el => { leggiFormEsercizio(); S.bozzaEs[el.dataset.campo] = el.dataset.valore; disegna(); },
+  'salva-esercizio': async () => {
+    leggiFormEsercizio();
+    const b = S.bozzaEs;
+    const errore = t => { $('#f-errore').textContent = t; };
+    const nome = b.nome.trim();
+    const rec = leggiNum(b.recupero_s);
+    if (!nome) return errore('Scrivi il nome.');
+    if (vivi('Esercizi').some(e => e.id !== b.id && String(e.nome).trim().toLowerCase() === nome.toLowerCase())) return errore('Esiste già un esercizio con questo nome.');
+    if (rec === null || rec < 0) return errore('Il recupero deve essere un numero di secondi.');
+    const e = b.id ? riga('Esercizi', b.id) : nuovaRiga('Esercizi', { id: nuovoId('EX'), origine: 'app' });
+    Object.assign(e, {
+      nome, tipo: b.tipo, area: b.area, attrezzo: b.attrezzo.trim(), gruppo: b.gruppo.trim(),
+      recupero_s: rec === '' ? 0 : Math.round(rec), nota: b.nota.trim(),
+      nome_strong: b.nome_strong.split(';').map(x => x.trim()).filter(Boolean).join('; '),
+      archiviato: b.archiviato === SI ? SI : NO,
+    });
+    await salva(['Esercizi', e]);
+    mostraAvviso('Esercizio salvato');
+    vai('esercizi', { vistaArchivio: 'esercizi', bozzaEs: null });
+  },
+  'nuovo-modello': async () => {
+    const modelli = vivi('Modelli');
+    const m = nuovaRiga('Modelli', { id: nuovoId('MOD'), nome: 'Nuovo modello', cartella: '', ordine: modelli.length + 1 });
+    await salva(['Modelli', m]);
+    vai('modello', { modelloId: m.id });
+    const campo = $('#m-nome'); if (campo) campo.select();
+  },
+  'apri-modello': el => vai('modello', { modelloId: el.dataset.id }),
+  'menu-modello': () => apriFoglio(`<h2>Modello</h2>
+    <button class="voce" data-azione="duplica-modello">${ic('copy')} Duplica il modello</button>
+    <button class="voce" data-azione="elimina-modello" style="color:var(--rosso)">${ic('trash')} Elimina il modello</button>
+    <p class="tenue">Le sessioni già fatte con questo modello non cambiano.</p>`),
+  'duplica-modello': async () => {
+    const copia = await duplicaModello(riga('Modelli', S.modelloId));
+    chiudiFoglio();
+    mostraAvviso('Modello duplicato');
+    vai('modello', { modelloId: copia.id });
+    S.schermata = 'modello'; disegna();
+  },
+  'elimina-modello': async () => {
+    const m = riga('Modelli', S.modelloId);
+    m.eliminato = SI; await salva(['Modelli', m]);
+    chiudiFoglio();
+    vai('esercizi', { vistaArchivio: 'modelli' });
+    mostraAvviso('Modello eliminato', async () => { m.eliminato = NO; await salva(['Modelli', m]); });
+  },
+
+  /* --- Varie --- */
   'chiudi-foglio': () => chiudiFoglio(),
   'timer-meno': () => cambiaTimer(-15),
   'timer-piu': () => cambiaTimer(15),
@@ -1014,14 +1566,36 @@ const AZIONI = {
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
   },
+  'scegli-csv': () => { const f = $('#file-strong'); f.value = ''; f.click(); },
+  'conferma-import': async () => {
+    const imp = S.importazione;
+    if (!imp) return;
+    const bottone = $('[data-azione="conferma-import"]');
+    if (bottone) { bottone.disabled = true; bottone.textContent = 'Importo…'; }
+    // Si ricontrolla subito prima di scrivere, nel caso il foglio sia cambiato nel frattempo.
+    const giaPresenti = new Set([...D.Sessioni.values()].map(s => normalizzaData(s.inizio) + '|' + String(s.titolo).trim()));
+    const doppie = imp.daSalvare.some(([sc, r]) => sc === 'Sessioni' && giaPresenti.has(normalizzaData(r.inizio) + '|' + String(r.titolo).trim()));
+    if (doppie) { $('#imp-errore').textContent = 'Alcune sessioni risultano già importate: riapri il file.'; return; }
+    await salvaLista(imp.daSalvare);
+    S.importazione = null;
+    chiudiFoglio();
+    mostraAvviso(`Importate ${imp.sessioni} sessioni. Le invio al foglio…`);
+    disegna();
+    sincronizza();
+  },
 };
 
-async function eliminaSerie(id) {
-  const s = riga('Serie', id);
-  s.eliminato = SI; await salva(['Serie', s]);
-  disegna();
-  mostraAvviso('Serie eliminata', async () => { s.eliminato = NO; await salva(['Serie', s]); });
-}
+/* Scelta del file CSV di Strong. */
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'file-strong' || !e.target.files.length) return;
+  try {
+    const testo = await e.target.files[0].text();
+    S.importazione = analizzaStrong(testo);
+    apriFoglio(foglioRiepilogoImport(S.importazione));
+  } catch (err) {
+    apriFoglio(`<h2>Non riesco a leggere il file</h2><p class="tenue">${esc(err.message)}</p><button class="btn2 largo" data-azione="chiudi-foglio">Chiudi</button>`);
+  }
+});
 
 /* Trascinamento di una serie verso destra o sinistra: oltre il 40% della larghezza si elimina. */
 let trascina = null, ultimoTrascinamento = 0;
@@ -1058,7 +1632,7 @@ function fineTrascina() {
   t.r.style.transition = 'transform .18s ease-out';
   if (t.oltre) {
     t.r.style.transform = `translateX(${Math.sign(t.dx) * largo}px)`;
-    setTimeout(() => eliminaSerie(t.r.dataset.rigaSerie), 180);
+    setTimeout(() => eliminaRiga(t.r.dataset.scheda, t.r.dataset.id), 180);
   } else {
     t.r.style.transform = '';
     setTimeout(() => { t.r.style.transition = ''; t.r.parentNode.classList.remove('in-trascinamento', 'oltre'); }, 200);
@@ -1074,7 +1648,11 @@ document.addEventListener('click', e => {
 document.addEventListener('click', async e => {
   sbloccaAudio();
   const vaiA = e.target.closest('[data-vai]');
-  if (vaiA) { e.preventDefault(); chiudiFoglio(); vai(vaiA.dataset.vai); return; }
+  if (vaiA) {
+    e.preventDefault(); chiudiFoglio();
+    if (vaiA.dataset.vai === 'esercizi' && TAB_DI[S.schermata] !== 'esercizi') S.vistaArchivio = 'esercizi';
+    vai(vaiA.dataset.vai); return;
+  }
   const el = e.target.closest('[data-azione]');
   if (!el || !AZIONI[el.dataset.azione]) return;
   try { await AZIONI[el.dataset.azione](el); }
@@ -1082,35 +1660,62 @@ document.addEventListener('click', async e => {
 });
 
 /* Scrittura nei campi: si salva a ogni modifica, senza ridisegnare (il cursore resta dov'è). */
+const LIMITI = { rpe: [0, 10], rpe_previsto: [0, 10], peso_kg: [0, 1000], rip: [0, 1000], durata_s: [0, 86400], durata_min: [0, 1440] };
+function segnaValido(el, valido) { el.style.outline = valido ? '' : '2px solid var(--rosso)'; return valido; }
 document.addEventListener('input', async e => {
   const el = e.target;
   if (el.dataset.ricerca === 'scelta') { S.ricerca = el.value; $('#lista-scelta').innerHTML = righeScelta(); return; }
-  if (el.dataset.ricerca === 'archivio') { S.ricercaArchivio = el.value; $('#lista-archivio').innerHTML = righeArchivio(elencoEsercizi(el.value)); return; }
+  if (el.dataset.ricerca === 'archivio') { S.ricercaArchivio = el.value; $('#lista-archivio').innerHTML = righeArchivio(); return; }
 
-  if (el.dataset.serie && el.dataset.campo) {
-    const s = riga('Serie', el.dataset.serie);
-    let v = leggiNum(el.value);
-    const limiti = { rpe: [0, 10], peso_kg: [0, 1000], rip: [0, 1000], durata_s: [0, 86400], durata_min: [0, 1440] }[el.dataset.campo];
-    const valido = v !== null && (v === '' || (v >= limiti[0] && v <= limiti[1]));
-    el.style.outline = valido ? '' : '2px solid var(--rosso)';
-    if (!valido) return;
-    if (el.dataset.campo === 'durata_min') s.durata_s = v === '' ? '' : Math.round(v * 60);
-    else s[el.dataset.campo] = (el.dataset.campo === 'rip' || el.dataset.campo === 'durata_s') && v !== '' ? Math.round(v) : v;
-    await salva(['Serie', s]);
+  // Numeri di una serie (della sessione o prevista nel modello).
+  if (el.dataset.scheda && el.dataset.campo && el.dataset.id) {
+    const scheda = el.dataset.scheda, campo = el.dataset.campo;
+    const s = riga(scheda, el.dataset.id);
+    const v = leggiNum(el.value);
+    const lim = LIMITI[campo];
+    if (!segnaValido(el, v !== null && (v === '' || (v >= lim[0] && v <= lim[1])))) return;
+    if (campo === 'durata_min') s.durata_s = v === '' ? '' : Math.round(v * 60);
+    else s[campo] = (campo === 'rip' || campo === 'durata_s') && v !== '' ? Math.round(v) : v;
+    await salva([scheda, s]);
     return;
   }
+  // Campi dell'esercizio nella sessione: nota e riabilitazione.
   if (el.dataset.se && el.dataset.seCampo) {
     const se = riga('SessioniEsercizi', el.dataset.se);
     const campo = el.dataset.seCampo;
     if (campo === 'nota' || campo.endsWith('_nota')) se[campo] = el.value;
     else {
       const v = leggiNum(el.value);
-      const valido = v !== null && (v === '' || (v >= 0 && v <= 10));
-      el.style.outline = valido ? '' : '2px solid var(--rosso)';
-      if (!valido) return;
+      if (!segnaValido(el, v !== null && (v === '' || (v >= 0 && v <= 10)))) return;
       se[campo] = v;
     }
     await salva(['SessioniEsercizi', se]);
+    return;
+  }
+  // Campi dell'esercizio nel modello: recupero e indicazione.
+  if (el.dataset.meCampo) {
+    const me = riga('ModelliEsercizi', el.dataset.id);
+    if (el.dataset.meCampo === 'recupero_s') {
+      const v = leggiNum(el.value);
+      if (!segnaValido(el, v !== null && (v === '' || (v >= 0 && v <= 3600)))) return;
+      me.recupero_s = v === '' ? '' : Math.round(v);
+    } else me.nota = el.value;
+    await salva(['ModelliEsercizi', me]);
+    return;
+  }
+  // Campi del modello.
+  if (el.dataset.modCampo) {
+    const m = riga('Modelli', S.modelloId);
+    const campo = el.dataset.modCampo;
+    if (campo === 'ordine') {
+      const v = leggiNum(el.value);
+      if (!segnaValido(el, v !== null)) return;
+      m.ordine = v;
+    } else if (campo === 'nome') {
+      if (!segnaValido(el, el.value.trim() !== '')) return;
+      m.nome = el.value.trim();
+    } else m[campo] = campo === 'cartella' ? el.value.trim() : el.value;
+    await salva(['Modelli', m]);
     return;
   }
   if (el.dataset.sessCampo) {

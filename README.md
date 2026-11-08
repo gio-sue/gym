@@ -91,6 +91,15 @@ Il token resta solo nel telefono. Se cancelli i dati di Chrome o reinstalli l'ap
 - In fondo a **Oggi** vedi lo stato: «Sincronizzato · 0 in coda» vuol dire che il foglio è aggiornato.
 - Nel foglio non si cancella mai nulla: una riga eliminata resta con `eliminato = sì`.
 
+## Importare lo storico di Strong (una volta sola)
+
+1. In Strong, dalle impostazioni, esporta i dati: ottieni un file CSV.
+2. In Gym: **Impostazioni → Storico di Strong → Scegli il file CSV**.
+3. Leggi il riepilogo (sessioni, serie, esercizi nuovi) e premi **Importa**.
+4. Lascia l'app aperta con la rete finché in fondo a **Oggi** non compare «0 in coda».
+
+Se lo rifai con lo stesso file, le sessioni già importate vengono saltate. Il CSV non va caricato su GitHub.
+
 ## Aggiornamenti dell'app
 
 Quando ricevi file nuovi, ricaricali su GitHub (stessa procedura, sovrascrivendo). Sul telefono l'app si aggiorna da sola: la versione nuova compare alla **seconda** apertura.
