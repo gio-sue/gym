@@ -81,8 +81,10 @@
   /* Elenco compatto per ordinare gli esercizi */
   .ord-voce{display:flex;align-items:center;gap:10px;background:var(--campo);border-radius:12px;min-height:56px;padding:6px 6px 6px 12px;margin-bottom:8px;
     touch-action:none;-webkit-user-select:none;user-select:none;cursor:grab;font-size:16px;line-height:1.35}
+  .ord-voce{position:relative;transition:transform .15s ease-out}
   .ord-coppia{border:1.5px solid var(--blu)}
-  .ord-voce.presa{background:var(--blu-fondo);outline:2px solid var(--blu-chiaro)}
+  /* La riga presa segue il dito senza ritardo e sta sopra le altre */
+  .ord-voce.presa{transition:none;z-index:3;background:var(--blu-fondo);outline:2px solid var(--blu-chiaro);box-shadow:0 8px 20px rgba(0,0,0,.5)}
   .ord-maniglia{color:var(--tenue);font-size:22px;display:flex}
   .serie.intest{color:#8b93a0;font-size:11px;padding:0 4px}
   .serie.intest span{text-align:center}

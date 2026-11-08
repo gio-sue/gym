@@ -12,7 +12,7 @@
 
 const SI = 'sì', NO = 'no';
 // Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
-const VERSIONE_APP = 6;
+const VERSIONE_APP = 7;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
@@ -1153,9 +1153,8 @@ function vociCompatte() {
       <span class="ord-maniglia">${ic('grip')}</span><span style="flex:1">${nomi}</span></div>`;
   }).join('')}</div>`;
 }
-async function salvaOrdine() {
+async function salvaOrdine(ids) {
   const { scheda } = S.compatto;
-  const ids = [...$('#ordina-lista').children].flatMap(el => el.dataset.ids.split(','));
   const cambiate = [];
   ids.forEach((id, k) => {
     const r = riga(scheda, id);
@@ -1171,35 +1170,79 @@ async function invertiCoppia(scheda, id) {
   await salva([scheda, a], [scheda, b]);
 }
 
-// Trascinamento nell'elenco: la voce presa resta ferma nel documento, si spostano le altre attorno.
+/* Trascinamento fluido nell'elenco compatto.
+ * Nessuna riga cambia posto nel documento mentre si trascina: la riga presa segue il dito
+ * (spostamento continuo) e le altre scivolano via con una piccola animazione. Il nuovo ordine
+ * si applica quando il dito si alza. */
 let presa = null;
 const metaAltezza = x => { const b = x.getBoundingClientRect(); return b.top + b.height / 2; };
-// «scarto» tiene conto della distanza tra il dito e la voce (il dito può essere ancora sul nome nella pagina).
 function prendi(el, pid, y) {
-  presa = { el, pid, mosso: false, scarto: metaAltezza(el) - y, ultimaY: y };
+  const voci = [...el.parentNode.children];
+  const sy = window.scrollY;
+  // Posizioni di partenza di tutte le righe, misurate sulla pagina (non sullo schermo).
+  const pos = voci.map(v => { const b = v.getBoundingClientRect(); return { el: v, top: b.top + sy, h: b.height }; });
+  const spazio = pos.length > 1 ? pos[1].top - pos[0].top - pos[0].h : 8;
+  presa = { el, pid, pos, spazio, i0: voci.indexOf(el), ordine: voci, mosso: false, y, y0: y, sy0: sy, arrivo: 0, frame: 0 };
   el.classList.add('presa');
+  muoviPresa();
+  presa.frame = setInterval(scorriAlBordo, 16); // circa 60 volte al secondo
+}
+function muoviPresa() {
+  const p = presa;
+  const io = p.pos[p.i0];
+  // Il centro della riga presa si sposta quanto il dito (e quanto la pagina, se scorre da sola).
+  const spostamento = (p.y - p.y0) + (window.scrollY - p.sy0);
+  const centro = io.top + io.h / 2 + spostamento;
+  p.el.style.transform = `translateY(${spostamento}px)`;
+  // Nuovo ordine: le altre righe restano in fila, la presa va dove cade il suo centro.
+  const altre = p.pos.filter((_, k) => k !== p.i0);
+  const posto = altre.filter(x => x.top + x.h / 2 < centro).length;
+  const ordine = altre.map(x => x.el);
+  ordine.splice(posto, 0, p.el);
+  if (ordine.some((v, k) => v !== p.ordine[k])) {
+    p.ordine = ordine; p.mosso = true;
+    if (navigator.vibrate) navigator.vibrate(8); // un piccolo «tic» a ogni cambio di posto
+  }
+  // Ogni riga scivola verso il suo nuovo posto; per la presa si ricorda dove dovrà posarsi.
+  let top = p.pos[0].top;
+  p.ordine.forEach(v => {
+    const o = p.pos.find(x => x.el === v);
+    if (v === p.el) p.arrivo = top - o.top;
+    else v.style.transform = Math.abs(top - o.top) < 0.5 ? '' : `translateY(${Math.round(top - o.top)}px)`;
+    top += o.h + p.spazio;
+  });
+}
+// Se il dito arriva vicino al bordo dello schermo, la pagina scorre da sola.
+function scorriAlBordo() {
+  if (!presa) return;
+  const alto = 80, basso = window.innerHeight - 150; // sopra la barra in basso
+  let v = 0;
+  if (presa.y < alto) v = -Math.ceil((alto - presa.y) / 5);
+  else if (presa.y > basso) v = Math.ceil((presa.y - basso) / 5);
+  if (v) {
+    const prima = window.scrollY;
+    window.scrollBy(0, v);
+    if (window.scrollY !== prima) muoviPresa();
+  }
 }
 document.addEventListener('pointermove', e => {
   if (!presa || e.pointerId !== presa.pid) return;
-  const { el } = presa, lista = el.parentNode;
-  const y = e.clientY + presa.scarto;
-  let cambiato = true;
-  while (cambiato) {
-    cambiato = false;
-    const prima = el.previousElementSibling, dopo = el.nextElementSibling;
-    if (prima && y < metaAltezza(prima)) { lista.insertBefore(prima, el.nextSibling); cambiato = presa.mosso = true; }
-    else if (dopo && y > metaAltezza(dopo)) { lista.insertBefore(dopo, el); cambiato = presa.mosso = true; }
-  }
+  presa.y = e.clientY;
+  muoviPresa();
 });
-// Quando il dito si alza: si salva il nuovo ordine e le schede si riaprono.
+// Quando il dito si alza: la riga si posa al suo posto, si salva l'ordine e le schede si riaprono.
 async function lasciaPresa() {
   if (!presa) return;
-  const { el, mosso } = presa;
+  const p = presa;
   presa = null;
-  el.classList.remove('presa');
+  clearInterval(p.frame);
+  p.el.classList.remove('presa'); // torna l'animazione: la riga scivola nel posto libero
+  p.el.style.transform = p.arrivo ? `translateY(${p.arrivo}px)` : '';
   if (!S.compatto) return;
+  const el = p.el;
   const primo = el.dataset.ids.split(',')[0];
-  if (mosso) await salvaOrdine();
+  await new Promise(r => setTimeout(r, 170));
+  if (p.mosso) await salvaOrdine(p.ordine.flatMap(v => v.dataset.ids.split(',')));
   S.compatto = null;
   $('#schermo').classList.remove('in-ordine');
   disegna();
@@ -1232,7 +1275,10 @@ document.addEventListener('pointerdown', e => {
       $('#schermo').classList.add('in-ordine');
       // La riga dell'esercizio premuto viene messa sotto il dito, che la trascina senza alzarsi.
       const voce = [...document.querySelectorAll('.ord-voce')].find(v => v.dataset.ids.split(',').includes(id));
-      window.scrollBy(0, metaAltezza(voce) - pressione.y);
+      // Se la riga è più in alto del dito, si lascia spazio sopra l'elenco; se è più in basso, la pagina scorre.
+      const scarto = pressione.y - metaAltezza(voce);
+      if (scarto > 0) $('#ordina-lista').style.marginTop = Math.round(scarto) + 'px';
+      else window.scrollBy(0, -scarto);
       prendi(voce, e.pointerId, pressione.y);
     }, 450),
   };
