@@ -102,6 +102,8 @@ Se lo rifai con lo stesso file, le sessioni già importate vengono saltate. Il C
 
 ## Aggiornamenti dell'app
 
+Se tra i file nuovi c'è anche `apps-script/Code.gs`, va rimesso anche nel foglio: incollalo in Apps Script, salva, poi **Esegui il deployment → Gestisci deployment → matita → Versione: Nuova versione → Esegui il deployment**. In **Impostazioni → Versione** dell'app vedi quale versione del ponte stai usando (es. «Ponte (Code.gs): versione 2»).
+
 Quando ricevi file nuovi, ricaricali su GitHub (stessa procedura, sovrascrivendo).
 
 1. Su GitHub, nella scheda **Actions** del repository, aspetta la spunta verde (di solito 1-2 minuti): vuol dire che il sito è pubblicato.

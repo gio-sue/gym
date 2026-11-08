@@ -8,9 +8,34 @@
  * Una sola porta d'ingresso: doPost. Il corpo è JSON spedito come testo semplice:
  *   { "token": "...", "azione": "ping" | "pull" | "push", ... }
  * Risposta: { "ok": true, ... } oppure { "ok": false, "errore": "..." }.
+ *
+ * Versione 2 (08/11/2026): date lette in qualsiasi formato e restituite come AAAA-MM-GG;
+ * aggiornamenti scritti a gruppi di righe vicine (molto più veloce).
  */
 
 var FUSO = 'Europe/Rome';
+var VERSIONE_PONTE = 2;
+
+// Colonne con date o orari: «ora» = AAAA-MM-GG HH:mm:ss, «giorno» = AAAA-MM-GG.
+var COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', data: 'giorno' };
+
+/**
+ * Riporta una data al formato dell'app, qualunque sia il modo in cui è finita nel foglio:
+ * vera data di Google Fogli, testo «05/11/2026 18:00» oppure già «2026-11-05 18:00:00».
+ * Le righe di partenza «AAAA-MM-GG HH:mm» (senza secondi) restano come sono, come chiede il brief.
+ */
+function normalizzaData(valore, testo, genere) {
+  if (valore instanceof Date && !isNaN(valore)) {
+    return Utilities.formatDate(valore, FUSO, genere === 'giorno' ? 'yyyy-MM-dd' : 'yyyy-MM-dd HH:mm:ss');
+  }
+  var t = String(testo == null ? '' : testo).trim();
+  if (!t || /^\d{4}-\d{2}-\d{2}/.test(t)) return t;
+  var m = t.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})(?:[ ,T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) return t; // formato sconosciuto: si lascia com'è
+  var g = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+  if (genere === 'giorno') return g;
+  return g + ' ' + ('0' + (m[4] || '0')).slice(-2) + ':' + (m[5] || '00') + ':' + (m[6] || '00');
+}
 
 // Le schede che l'app può leggere e scrivere. «Leggimi» non si tocca mai.
 var SCHEDE = ['Esercizi', 'Modelli', 'ModelliEsercizi', 'ModelliSerie', 'Sessioni',
@@ -85,6 +110,7 @@ function leggiScheda(nomeScheda) {
 
 /** Converte una cella letta dal foglio nel valore da mandare all'app. */
 function valoreLetto(nomeScheda, colonna, valore, testo) {
+  if (COLONNE_DATA[colonna] && nomeScheda !== 'Impostazioni') return normalizzaData(valore, testo, COLONNE_DATA[colonna]);
   if (!eNumerica(nomeScheda, colonna)) return testo;
   if (valore === '' || valore === null) return '';
   if (typeof valore === 'number') return valore;
@@ -120,7 +146,7 @@ function pull(corpo) {
     var righe = [];
     for (var r = 0; r < s.valori.length; r++) {
       if (iChiave === -1 || s.testi[r][iChiave] === '') continue;
-      if (dal && iAgg !== -1 && !(s.testi[r][iAgg] > dal)) continue;
+      if (dal && iAgg !== -1 && !(normalizzaData(s.valori[r][iAgg], s.testi[r][iAgg], 'ora') > dal)) continue;
       var riga = {};
       s.intestazioni.forEach(function (col, c) {
         if (col) riga[col] = valoreLetto(nome, col, s.valori[r][c], s.testi[r][c]);
@@ -129,7 +155,7 @@ function pull(corpo) {
     }
     uscita[nome] = { intestazioni: s.intestazioni.filter(function (h) { return h; }), righe: righe };
   });
-  return { ok: true, adesso: adesso(), schede: uscita };
+  return { ok: true, adesso: adesso(), versione_ponte: VERSIONE_PONTE, schede: uscita };
 }
 
 function push(corpo) {
@@ -169,27 +195,30 @@ function scriviScheda(nome, righe) {
   s.testi.forEach(function (riga, i) { if (riga[iChiave] !== '') posizione[riga[iChiave]] = i; });
 
   var nuove = [], scritte = 0, ignorate = 0;
+  var cambiate = {}; // indice della riga -> { riga, formati } (scritti tutti insieme alla fine)
+  var formatiOriginali = null; // letti solo se servono: le colonne sconosciute tengono il loro formato
   righe.forEach(function (inArrivo) {
     var id = inArrivo && inArrivo[chiave] !== undefined ? String(inArrivo[chiave]) : '';
     if (!id) throw new Error('riga senza ' + chiave + ' in ' + nome);
     var i = posizione[id];
     if (i !== undefined) {
-      var presente = iAgg === -1 ? '' : s.testi[i][iAgg];
+      var presente = iAgg === -1 ? '' : normalizzaData(s.valori[i][iAgg], s.testi[i][iAgg], 'ora');
       var arriva = iAgg === -1 ? '' : String(inArrivo.aggiornato_il || '');
       if (iAgg !== -1 && arriva < presente) { ignorate++; return; }
       // Le colonne che l'app non conosce restano come sono.
+      if (!formatiOriginali) formatiOriginali = s.foglio.getRange(2, 1, s.valori.length, larghezza).getNumberFormats();
       var riga = s.valori[i].slice();
+      var formatiRiga = formatiOriginali[i].slice();
       s.intestazioni.forEach(function (col, c) {
         if (col && Object.prototype.hasOwnProperty.call(inArrivo, col)) {
           riga[c] = valoreDaScrivere(nome, col, inArrivo[col]);
+          formatiRiga[c] = formati[c];
         }
       });
-      var area = s.foglio.getRange(i + 2, 1, 1, larghezza);
-      area.setNumberFormats([formati]);
-      area.setValues([riga]);
       s.valori[i] = riga;
       if (iAgg !== -1) s.testi[i][iAgg] = arriva;
-      scritte++;
+      if (!cambiate[i]) scritte++;
+      cambiate[i] = { riga: riga, formati: formatiRiga };
     } else if (nuove.some(function (n) { return n.id === id; })) {
       // Stessa riga due volte nello stesso invio: tiene la più recente.
       var doppia = nuove.filter(function (n) { return n.id === id; })[0];
@@ -201,6 +230,19 @@ function scriviScheda(nome, righe) {
       nuove.push({ id: id, agg: String(inArrivo.aggiornato_il || ''), riga: costruisciRiga(nome, s.intestazioni, inArrivo) });
     }
   });
+
+  // Righe aggiornate: si scrivono a gruppi di righe consecutive, una sola operazione per gruppo.
+  var indici = Object.keys(cambiate).map(Number).sort(function (a, b) { return a - b; });
+  for (var k = 0; k < indici.length;) {
+    var inizio = indici[k], fine = inizio;
+    while (k + 1 < indici.length && indici[k + 1] === fine + 1) { k++; fine++; }
+    k++;
+    var blocco = [];
+    for (var r = inizio; r <= fine; r++) blocco.push(cambiate[r]);
+    var zona = s.foglio.getRange(inizio + 2, 1, blocco.length, larghezza);
+    zona.setNumberFormats(blocco.map(function (b) { return b.formati; }));
+    zona.setValues(blocco.map(function (b) { return b.riga; }));
+  }
 
   if (nuove.length) {
     var primaLibera = s.foglio.getLastRow() + 1;

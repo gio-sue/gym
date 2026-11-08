@@ -19,11 +19,15 @@
     --rosso:#f87171;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;background:var(--sfondo);color:var(--testo)}
+  html,body{margin:0;background:var(--sfondo);color:var(--testo);overscroll-behavior-y:contain} /* niente ricarica trascinando in giù */
   body{font-family:Roboto,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:16px;line-height:1.4;
     padding-bottom:calc(72px + env(safe-area-inset-bottom))}
-  body.con-timer{padding-bottom:calc(136px + env(safe-area-inset-bottom))}
+  body.con-timer{padding-bottom:calc(170px + env(safe-area-inset-bottom))}
   button,input,textarea,select{font:inherit;color:inherit}
+  /* Niente selezione del testo (e quindi niente barra di ricerca di Google in basso),
+     tranne nei campi dove si scrive, altrimenti non si potrebbe correggere. */
+  body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  input,textarea{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
   main{max-width:560px;margin:0 auto;padding:0 12px}
   h1{margin:0;font-size:24px;font-weight:500}
   h2{margin:0;font-size:17px;font-weight:500}
@@ -40,7 +44,7 @@
   .vuoto-msg{color:var(--tenue);text-align:center;padding:32px 12px}
 
   .btn{background:var(--blu);color:#fff;border:none;border-radius:12px;min-height:48px;font-size:16px;font-weight:500;padding:0 18px;cursor:pointer}
-  .btn.verde{background:var(--verde)}
+  .btn.verde{background:#15803d} /* verde più scuro: testo bianco leggibile (contrasto 5:1) */
   .btn2{background:#232731;color:#cfe0ff;border:none;border-radius:12px;min-height:48px;font-size:15px;padding:0 14px;cursor:pointer}
   .btn2.pericolo{color:var(--rosso)}
   .largo{width:100%}
@@ -64,13 +68,47 @@
   .scorri-fondo{position:absolute;inset:0;background:#b91c1c;color:#fff;display:none;justify-content:space-between;align-items:center;padding:0 18px;font-size:22px}
   .scorri.in-trascinamento .scorri-fondo{display:flex}
   .scorri.oltre .scorri-fondo .ic{transform:scale(1.3)}
-  .serie.c-peso_rip{grid-template-columns:40px minmax(0,1fr) 56px 46px 42px 46px}
-  .serie.c-rip{grid-template-columns:40px minmax(0,1fr) 60px 42px 46px}
-  .serie.c-durata,.serie.c-cardio{grid-template-columns:40px minmax(0,1fr) 62px 42px 46px}
-  .serie.c-peso_durata{grid-template-columns:40px minmax(0,1fr) 54px 54px 42px 46px}
+  /* Colonne: serie | ultima volta | numeri | (RPE) | spunta */
+  .serie.c-peso_rip{grid-template-columns:40px minmax(0,1fr) 56px 46px 42px 48px}
+  .serie.c-rip{grid-template-columns:40px minmax(0,1fr) 60px 42px 48px}
+  .serie.c-durata,.serie.c-cardio{grid-template-columns:40px minmax(0,1fr) 62px 42px 48px}
+  .serie.c-peso_durata{grid-template-columns:40px minmax(0,1fr) 54px 54px 42px 48px}
+  /* RPE nascosto (Impostazioni): «Ultima» e i numeri hanno più spazio */
+  .serie.no-rpe.c-peso_rip{grid-template-columns:40px minmax(0,1fr) 62px 52px 48px}
+  .serie.no-rpe.c-rip{grid-template-columns:40px minmax(0,1fr) 66px 48px}
+  .serie.no-rpe.c-durata,.serie.no-rpe.c-cardio{grid-template-columns:40px minmax(0,1fr) 68px 48px}
+  .serie.no-rpe.c-peso_durata{grid-template-columns:40px minmax(0,1fr) 58px 58px 48px}
   /* Serie previste nel modello: niente «ultima volta» e niente spunta */
   .serie.mod.c-peso_rip,.serie.mod.c-peso_durata{grid-template-columns:52px 1fr 1fr 1fr}
   .serie.mod.c-rip,.serie.mod.c-durata,.serie.mod.c-cardio{grid-template-columns:52px 1fr 1fr}
+  .serie.mod.no-rpe.c-peso_rip,.serie.mod.no-rpe.c-peso_durata{grid-template-columns:52px 1fr 1fr}
+  .serie.mod.no-rpe.c-rip,.serie.mod.no-rpe.c-durata,.serie.mod.no-rpe.c-cardio{grid-template-columns:52px 1fr}
+  /* Telefoni stretti: numeri un po' più piccoli, così «Ultima» resta leggibile */
+  @media (max-width:350px){
+    .serie.c-peso_rip{grid-template-columns:34px minmax(0,1fr) 50px 40px 36px 46px}
+    .serie.no-rpe.c-peso_rip{grid-template-columns:34px minmax(0,1fr) 54px 46px 46px}
+    .serie.c-peso_durata{grid-template-columns:34px minmax(0,1fr) 48px 48px 36px 46px}
+    .serie .num{font-size:16px}
+    main{padding:0 8px}
+  }
+  /* Esercizio finito: scheda compatta, si riapre toccandola */
+  .compatta{padding:6px 12px 6px 4px}
+  .compatta>.ic{color:var(--tenue);font-size:22px}
+  .compatta-apri{flex:1;min-width:0;background:none;border:none;text-align:left;padding:8px;min-height:48px;cursor:pointer;color:inherit}
+  .compatta-apri .tenue .ic{color:var(--verde)}
+  .compatta-apri .tenue{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .avviso-card{border:1.5px solid #3b4252}
+  /* Oggi: i sette giorni della settimana, pieni quelli allenati */
+  .settimana-oggi{display:flex;justify-content:space-between;margin-top:10px}
+  .settimana-oggi span{width:34px;height:34px;line-height:34px;border-radius:50%;text-align:center;font-size:13px;color:var(--tenue);background:var(--campo)}
+  .settimana-oggi span.si{background:var(--verde);color:#fff}
+  .settimana-oggi span.oggi{outline:2px solid var(--blu);outline-offset:1px}
+  /* Valore toccato su un grafico */
+  .valore-grafico{font-size:13px;color:var(--tenue);min-height:20px;margin-top:4px}
+  .valore-grafico b{font-weight:500}
+  /* Elenco degli esercizi: titoletti «Recenti» / «Tutti» */
+  .sotto-titolo{font-size:12px;color:var(--tenue);margin:10px 6px 2px}
+  .descrizione{color:#cbd2dc}
   .coppia{border:1.5px solid var(--blu-fondo);border-radius:18px;padding:6px;display:flex;flex-direction:column;gap:8px}
   .coppia-tit{font-size:12px;color:#bcd7ff;padding:2px 8px}
   /* Nome dell'esercizio: si tiene premuto per ordinare (niente selezione del testo) */
@@ -79,17 +117,20 @@
   h2 .tenue{font-weight:400}
   /* Calendario dello Storico */
   .calendario{display:grid;grid-template-columns:repeat(7,1fr);gap:4px 0;text-align:center;font-size:12px;margin-top:8px}
-  .calendario .giorno{width:36px;height:36px;line-height:36px;margin:2px auto;padding:0;border:none;background:none;color:var(--testo);font-size:14px;border-radius:50%}
+  /* 40 px: sette colonne nella larghezza di un telefono non permettono di più */
+  .calendario .giorno{width:40px;height:40px;line-height:40px;margin:2px auto;padding:0;border:none;background:none;color:var(--testo);font-size:15px;border-radius:50%}
   .calendario button.giorno{cursor:pointer}
   .calendario .giorno.si{background:var(--verde);color:#fff}
-  .calendario .giorno.oggi{border:2px solid var(--blu);line-height:32px}
+  .calendario .giorno.oggi{border:2px solid var(--blu);line-height:36px}
   .calendario .giorno.scelto{outline:2px solid #fff;outline-offset:1px}
+  .calendario .giorno.fuori{color:var(--spento)}
+  .calendario .giorno.fuori.si{background:#14532d;color:#a7c4b2}
   /* Test */
   .valori-test{display:flex;gap:18px;margin-top:6px}
   .valori-test b{font-size:22px;font-weight:500}
   .lato-test{display:block;font-size:12px}
   .grande-test{font-size:26px;padding:12px 0;min-height:52px}
-  input[type=date].testo{color-scheme:dark}
+  input[type=date].testo,input[type=datetime-local].testo{color-scheme:dark}
   .tabella{width:100%;border-collapse:collapse;font-size:14px}
   .tabella th{color:var(--tenue);font-weight:400;font-size:12px;text-align:right;padding:4px 6px}
   .tabella th:first-child,.tabella td:first-child{text-align:left}
@@ -110,37 +151,44 @@
   .serie.intest{color:#8b93a0;font-size:11px;padding:0 4px}
   .serie.intest span{text-align:center}
   .serie.intest span:nth-child(-n+2){text-align:left}
-  .num{background:var(--campo);border:none;border-radius:8px;text-align:center;padding:10px 0;font-size:18px;font-weight:500;width:100%;min-height:44px}
+  /* Bersagli da almeno 48 px (brief §7) */
+  .num{background:var(--campo);border:none;border-radius:8px;text-align:center;padding:10px 0;font-size:18px;font-weight:500;width:100%;min-height:48px}
   .num::placeholder{color:var(--spento);font-weight:400}
   .serie:not(.fatta) .num{color:#aab2bd}
   .num:focus{outline:2px solid var(--blu);color:var(--testo)}
   .num.rpe{font-size:15px}
-  .lab-serie{background:none;border:none;color:var(--testo);font-size:13px;min-height:44px;padding:0;text-align:left;cursor:pointer}
+  .lab-serie{background:none;border:none;color:var(--testo);font-size:13px;min-height:48px;padding:0;text-align:left;cursor:pointer}
   .lab-serie b{font-weight:500;font-size:15px}
   .lab-serie.risc{color:#fbbf24}
   .lab-serie.ced{color:var(--rosso)}
   .ultima{color:var(--tenue);font-size:12px;overflow:hidden;background:none;border:none;padding:0;text-align:left;line-height:1.25}
-  button.ultima{min-height:44px;cursor:pointer}
-  .spunta{width:48px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;
+  button.ultima{min-height:48px;cursor:pointer}
+  .spunta{width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:24px;
     border:2px solid var(--blu);color:var(--blu-chiaro);background:none;cursor:pointer;transition:background .3s,border-color .3s}
   .fatta{background:var(--verde-fondo)}
   .fatta .num{background:var(--verde-campo);color:#d7f5e3}
   .fatta .spunta{background:var(--verde);border-color:var(--verde);color:#fff}
-  .durata-cella{display:flex;gap:4px;align-items:center}
-  .avvia{background:var(--blu-fondo);border:none;color:#cfe0ff;border-radius:8px;min-width:30px;min-height:44px;font-size:16px;padding:0;cursor:pointer}
 
   details.riab{margin:10px 4px 0;border-top:1px solid var(--bordo);padding-top:4px}
-  details.riab summary{list-style:none;display:flex;justify-content:space-between;align-items:center;min-height:44px;font-size:14px;font-weight:500;cursor:pointer}
+  details.riab summary{list-style:none;display:flex;justify-content:space-between;align-items:center;min-height:48px;font-size:14px;font-weight:500;cursor:pointer}
   details.riab summary::-webkit-details-marker{display:none}
   details.riab[open] summary .ic{transform:rotate(180deg)}
   .riab-riga{display:grid;grid-template-columns:84px 60px minmax(0,1fr);gap:8px;align-items:center;margin-bottom:8px}
-  .testo{background:var(--campo);border:none;border-radius:8px;padding:11px 10px;font-size:14px;width:100%;min-height:44px}
+  .testo{background:var(--campo);border:none;border-radius:8px;padding:11px 10px;font-size:15px;width:100%;min-height:48px}
   .testo::placeholder{color:var(--spento)}
   textarea.testo{resize:vertical;min-height:60px}
 
   /* ---- Timer di recupero (visibile in tutte le schermate) ---- */
   #timer{position:fixed;left:0;right:0;bottom:calc(64px + env(safe-area-inset-bottom));z-index:20;padding:0 12px 8px}
-  #timer .dentro{max-width:536px;margin:0 auto;background:var(--blu-fondo);border-radius:14px;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px 6px 14px}
+  #timer .dentro{max-width:536px;margin:0 auto;background:var(--blu-fondo);border-radius:14px;padding:6px 8px 6px 14px}
+  #timer .riga-timer{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  #timer .riga-prossima{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px;color:#cfe0ff}
+  #timer .riga-prossima:empty,#timer #timer-prossima:empty{display:none}
+  #timer #timer-prossima{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 0}
+  #timer .salva-rec{min-height:40px;font-size:13px;padding:0 10px;margin-top:4px}
+  /* Mentre si scrive, la barra in basso sparisce (la tastiera prende il suo posto) e il timer scende */
+  body.scrivendo #barra{display:none}
+  body.scrivendo #timer{bottom:0}
   #timer.finito .dentro{background:var(--verde)}
   #timer .tempo{font-size:28px;font-weight:500;font-variant-numeric:tabular-nums;min-width:80px;text-align:center}
   #timer .btn-t{background:#26456f;border:none;color:#fff;border-radius:10px;min-width:52px;min-height:48px;font-size:15px;cursor:pointer}
@@ -160,7 +208,7 @@
   .voce:active{background:var(--campo)}
   .voce .ic{font-size:22px;color:var(--tenue)}
   .scelte{display:flex;gap:6px;flex-wrap:wrap;margin:4px 0 10px}
-  .scelta{background:var(--campo);border:none;border-radius:10px;min-height:44px;padding:0 14px;cursor:pointer}
+  .scelta{background:var(--campo);border:none;border-radius:10px;min-height:48px;padding:0 14px;cursor:pointer}
   .scelta.si{background:var(--blu);color:#fff}
   .campo-modulo{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
   .campo-modulo label{font-size:13px;color:var(--tenue)}
@@ -169,30 +217,32 @@
   #avviso{position:fixed;left:12px;right:12px;bottom:calc(140px + env(safe-area-inset-bottom));z-index:50;display:flex;justify-content:center}
   #avviso[hidden]{display:none}
   #avviso .dentro{background:#323844;border-radius:12px;padding:6px 6px 6px 14px;display:flex;align-items:center;gap:12px;max-width:536px;width:100%;justify-content:space-between}
-  #avviso button{background:none;border:none;color:var(--blu-chiaro);font-weight:500;min-height:44px;padding:0 12px;cursor:pointer}
+  #avviso button{background:none;border:none;color:var(--blu-chiaro);font-weight:500;min-height:48px;padding:0 12px;cursor:pointer}
 
-  .settimana{display:flex;justify-content:space-between;text-align:center;font-size:12px;color:var(--tenue)}
-  .giorno{width:32px;height:32px;border-radius:50%;margin:4px auto 0;line-height:32px;color:var(--testo)}
-  .giorno.si{background:var(--verde);color:#fff}
-  .giorno.oggi{border:2px solid var(--blu);line-height:28px}
   .stato-sync{color:var(--tenue);font-size:13px;text-align:center;padding:12px 0}
+  .stato-sync a{color:inherit}
+  .stato-sync a.errore{color:var(--rosso)}
   .errore{color:var(--rosso)}
   .riepilogo{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center}
   .riepilogo b{display:block;font-size:24px;font-weight:500}
 </style>
 </head>
 <body>
-<main id="schermo"></main>
+<main id="schermo"><div class="vuoto-msg">Apro Gym…</div></main>
 
 <div id="timer" hidden>
   <div class="dentro">
-    <span class="tenue" style="color:#bcd7ff">Recupero</span>
-    <span class="tempo" id="timer-tempo">0:00</span>
-    <span style="display:flex;gap:6px">
-      <button class="btn-t" data-azione="timer-meno">−15</button>
-      <button class="btn-t" data-azione="timer-piu">+15</button>
-      <button class="btn-t" data-azione="timer-stop">Salta</button>
-    </span>
+    <div class="riga-timer">
+      <span class="tenue" style="color:#bcd7ff">Recupero</span>
+      <span class="tempo" id="timer-tempo">0:00</span>
+      <span style="display:flex;gap:6px">
+        <button class="btn-t" data-azione="timer-meno" aria-label="Meno 15 secondi">−15</button>
+        <button class="btn-t" data-azione="timer-piu" aria-label="Più 15 secondi">+15</button>
+        <button class="btn-t" data-azione="timer-stop">Salta</button>
+      </span>
+    </div>
+    <div class="riga-prossima"><span id="timer-prossima"></span>
+      <button class="btn-t salva-rec" id="timer-salva" data-azione="timer-salva" hidden></button></div>
   </div>
 </div>
 

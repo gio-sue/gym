@@ -12,7 +12,7 @@
 
 const SI = 'sì', NO = 'no';
 // Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
-const VERSIONE_APP = 10;
+const VERSIONE_APP = 14;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
@@ -70,8 +70,6 @@ const ICONE = {
   dots: '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
   'chevron-down': '<path d="M6 9l6 6 6-6"/>',
   'chevron-right': '<path d="M9 6l6 6-6 6"/>',
-  'arrow-up': '<path d="M12 19V5M6 11l6-6 6 6"/>',
-  'arrow-down': '<path d="M12 5v14M6 13l6 6 6-6"/>',
   'arrow-left': '<path d="M19 12H5M11 6l-6 6 6 6"/>',
   settings: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9L7 7M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',
   cloud: '<path d="M7 18a4.5 4.5 0 0 1 0-9 5.5 5.5 0 0 1 10.6 1.5A3.75 3.75 0 0 1 17 18z"/>',
@@ -88,7 +86,6 @@ const ICONE = {
   upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
   grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
   swap: '<path d="M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4"/>',
-  list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 function ic(nome) { return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONE[nome] || ''}</svg>`; }
 
@@ -106,7 +103,25 @@ const FORMATO_ORA = new Intl.DateTimeFormat('sv-SE', {
   hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
 });
 function ora(d = new Date()) { return FORMATO_ORA.format(d).replace('T', ' '); }
-function dataDa(testo) { return testo ? new Date(String(testo).replace(' ', 'T')) : null; }
+
+/* Le date nel foglio possono arrivare anche in formato italiano («05/11/2026 18:00»), per esempio se
+ * scritte a mano: si riportano sempre ad «AAAA-MM-GG HH:mm:ss» (genere «ora») o «AAAA-MM-GG» («giorno»).
+ * Le righe di partenza «AAAA-MM-GG HH:mm» restano come sono (il brief le considera valide). */
+function normalizzaData(testo, genere = 'ora') {
+  const t = String(testo == null ? '' : testo).trim();
+  if (!t || /^\d{4}-\d{2}-\d{2}/.test(t)) return t;
+  const m = t.match(/^(\d{1,2})[/.\-](\d{1,2})[/.\-](\d{4})(?:[ ,T]+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) return t;
+  const g = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
+  return genere === 'giorno' ? g : `${g} ${(m[4] || '0').padStart(2, '0')}:${m[5] || '00'}:${m[6] || '00'}`;
+}
+const COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', data: 'giorno' };
+function dataDa(testo) {
+  const t = normalizzaData(testo);
+  if (!t) return null;
+  const d = new Date(t.replace(' ', 'T'));
+  return isNaN(d) ? null : d;
+}
 
 function nuovoId(prefisso) {
   const lettere = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
@@ -116,6 +131,8 @@ function nuovoId(prefisso) {
 
 // Numeri: sul telefono si scrive con la virgola, in memoria sono numeri veri.
 function fmtNum(v) { return v === '' || v == null ? '' : String(v).replace('.', ','); }
+// Per scrivere un numero dentro la pagina: se dal foglio arrivasse del testo, non verrebbe mai eseguito.
+function numH(v) { return esc(fmtNum(v)); }
 function leggiNum(testo) {
   const t = String(testo).trim();
   if (t === '') return '';
@@ -262,7 +279,12 @@ async function salvaMeta(chiave, valore) {
 }
 
 async function caricaTutto() {
-  (await tutti('righe')).forEach(({ scheda, riga: r }) => { if (D[scheda]) D[scheda].set(r.id, r); });
+  (await tutti('righe')).forEach(({ scheda, riga: r }) => {
+    if (!D[scheda]) return;
+    // Date arrivate in passato in formato italiano: si correggono in memoria.
+    Object.keys(COLONNE_DATA).forEach(c => { if (c in r) r[c] = normalizzaData(r[c], COLONNE_DATA[c]); });
+    D[scheda].set(r.id, r);
+  });
   (await tutti('meta')).forEach(({ chiave, valore }) => { meta[chiave] = valore; });
   codaQuante = await contaCoda();
   versioneDati++;
@@ -278,9 +300,11 @@ function programmaSync() {
   attesaSync = setTimeout(() => sincronizza(), 4000);
 }
 
+let progressoInvio = null; // { inviate, totale } mentre si manda una coda lunga
+
 async function chiamaPonte(corpo) {
   const controllo = new AbortController();
-  const scadenza = setTimeout(() => controllo.abort(), 60000);
+  const scadenza = setTimeout(() => controllo.abort(), 90000);
   try {
     // Testo semplice: così il browser non fa la richiesta preliminare CORS.
     const risposta = await fetch(meta.url, {
@@ -311,13 +335,24 @@ async function sincronizza({ completo = false } = {}) {
   if (!navigator.onLine) { statoSync = 'offline'; aggiornaStatoSync(); return; }
   syncInCorso = true; statoSync = 'in corso'; aggiornaStatoSync();
   try {
-    // 1) Invio della coda, a blocchi.
+    // 1) Invio della coda, a blocchi. Se il ponte non risponde in tempo, il blocco si dimezza
+    //    (fino a 25 righe) e si riprova al giro dopo: così una coda enorme non resta bloccata per sempre.
     let coda = await tutti('coda');
+    const totale = coda.length;
+    let inviate = 0;
     while (coda.length) {
-      const lotto = coda.slice(0, 500);
+      const dimensione = Math.max(25, Math.min(500, meta.lotto || 500));
+      const lotto = coda.slice(0, dimensione);
       const righe = {};
       lotto.forEach(e => { (righe[e.scheda] = righe[e.scheda] || []).push(e.riga); });
-      await chiamaPonte({ azione: 'push', righe });
+      if (totale > 500) { progressoInvio = { inviate, totale }; aggiornaStatoSync(); }
+      try {
+        await chiamaPonte({ azione: 'push', righe });
+      } catch (err) {
+        if (/tempo scaduto/.test(err.message)) await salvaMeta('lotto', Math.max(25, Math.floor(dimensione / 2)));
+        throw err;
+      }
+      if (dimensione < 500) await salvaMeta('lotto', Math.min(500, dimensione * 2)); // va bene: si torna a blocchi grandi
       const daTogliere = [];
       for (const e of lotto) {
         const attuale = await leggiUno('coda', e.k);
@@ -325,10 +360,12 @@ async function sincronizza({ completo = false } = {}) {
       }
       await scriviIn(daTogliere);
       await salvaMeta('ultimoInvio', ora());
-      coda = coda.slice(500);
+      inviate += lotto.length;
+      coda = coda.slice(lotto.length);
       codaQuante = await contaCoda();
       aggiornaStatoSync();
     }
+    progressoInvio = null;
 
     // 2) Lettura delle novità. Una volta al giorno si rilegge tutto, per sicurezza.
     const oggi = ora().slice(0, 10);
@@ -337,7 +374,12 @@ async function sincronizza({ completo = false } = {}) {
     const tutto = completo || mancaQualcosa || !meta.cursore || meta.ultimoCompleto !== oggi;
     let dal = '';
     if (!tutto) dal = ora(new Date(dataDa(meta.cursore).getTime() - 3600 * 1000)); // un'ora di margine
-    const dati = await chiamaPonte({ azione: 'pull', dal, schede: SCHEDE });
+    const dati = await chiamaPonte({ azione: 'pull', dal, schede: [...SCHEDE, 'Impostazioni'] });
+    // Impostazioni del foglio: si legge solo la versione dello schema (per accorgersi se un giorno cambia).
+    const imp = ((dati.schede || {}).Impostazioni || {}).righe || [];
+    const vs = imp.find(r => r.chiave === 'versione_schema');
+    if (vs) await salvaMeta('versioneSchema', String(vs.valore).trim());
+    await salvaMeta('versionePonte', dati.versione_ponte || 1);
     const { cambiate, daRiinviare } = await unisci(dati.schede || {});
     if (daRiinviare.length) await salvaLista(daRiinviare); // colonna appena aggiunta nel foglio: si mandano i valori del telefono
     await salvaMeta('cursore', dati.adesso);
@@ -377,6 +419,8 @@ async function unisci(schede) {
       if (!arrivata.id) return;
       if (inAttesa.has(scheda + '|' + arrivata.id)) return; // la versione del telefono partirà al prossimo invio
       const r = soloSchema(scheda, arrivata);
+      // Date in qualsiasi formato → sempre AAAA-MM-GG (serve anche se il ponte è ancora la versione 1).
+      Object.keys(COLONNE_DATA).forEach(c => { if (c in r) r[c] = normalizzaData(r[c], COLONNE_DATA[c]); });
       const locale = D[scheda].get(r.id);
       if (locale) {
         manca.forEach(c => { r[c] = locale[c] ?? ''; });
@@ -398,9 +442,11 @@ async function unisci(schede) {
 
 function testoStatoSync() {
   if (!meta.url || !meta.token) return `<span class="errore">Ponte non configurato</span> · <a href="#" data-vai="impostazioni" style="color:var(--blu-chiaro)">Impostazioni</a>`;
-  const coda = codaQuante ? `${codaQuante} in coda` : '0 in coda';
+  const coda = codaQuante ? `${codaQuante.toLocaleString('it-IT')} in coda` : '0 in coda';
+  if (statoSync === 'in corso' && progressoInvio) return `Invio ${progressoInvio.inviate.toLocaleString('it-IT')} di ${progressoInvio.totale.toLocaleString('it-IT')} righe…`;
   if (statoSync === 'in corso') return `Sincronizzo… · ${coda}`;
-  if (statoSync === 'errore' || meta.ultimoErrore) return `<span class="errore">Errore di sincronizzazione</span> · ${coda}`;
+  if (statoSync === 'errore' || meta.ultimoErrore) return `<a href="#" data-vai="impostazioni" class="errore">Errore di sincronizzazione</a> · ${coda}`;
+  if (meta.versioneSchema && meta.versioneSchema !== '1') return `<a href="#" data-vai="impostazioni" class="errore">Lo schema del foglio è cambiato</a> · ${coda}`;
   if (statoSync === 'offline' || !navigator.onLine) return `Senza rete · ${coda}`;
   return codaQuante ? `${ic('cloud')} ${coda}` : `${ic('cloud')} Sincronizzato · 0 in coda`;
 }
@@ -431,17 +477,42 @@ function suona() {
   });
 }
 
-function avviaTimer(secondi) {
+// seId: l'esercizio che ha fatto partire il recupero (per «Usa sempre»); prossima: testo della prossima serie.
+function avviaTimer(secondi, seId = '') {
   if (!secondi || secondi <= 0) return;
+  const se = seId && riga('SessioniEsercizi', seId);
+  salvaMeta('timerInfo', { seId, base: secondi, durata: secondi, prossima: se ? testoProssima(se.sessione_id) : '' });
   salvaMeta('timerFine', Date.now() + secondi * 1000);
   aggiornaTimer();
 }
 function cambiaTimer(delta) {
   if (!meta.timerFine) return;
   salvaMeta('timerFine', Math.max(Date.now() + 1000, meta.timerFine + delta * 1000));
+  const info = meta.timerInfo;
+  if (info) salvaMeta('timerInfo', Object.assign({}, info, { durata: Math.max(5, info.durata + delta) }));
   aggiornaTimer();
 }
 function fermaTimer() { salvaMeta('timerFine', 0); aggiornaTimer(); }
+
+/* La prossima serie da fare della sessione, rispettando l'alternanza delle superserie (A1, B1, A2…). */
+function testoProssima(sessioneId) {
+  for (const b of blocchi(eserciziDi(sessioneId))) {
+    const liste = b.map(se => serieDi(se.id));
+    const giri = Math.max(...liste.map(l => l.length));
+    for (let i = 0; i < giri; i++) {
+      for (let k = 0; k < b.length; k++) {
+        const s = liste[k][i];
+        if (!s || s.fatta === SI) continue;
+        const es = riga('Esercizi', b[k].esercizio_id);
+        const tipo = tipoDi(es);
+        const et = etichettaSerie(liste[k], s, b.length > 1 ? (k ? 'B' : 'A') : '').testo.replace(/<[^>]+>/g, '');
+        const valori = COLONNE_TIPO[tipo].some(([c]) => (c === 'durata_min' ? s.durata_s : s[c]) !== '') ? ' · ' + fmtPrecedente(tipo, s) : '';
+        return `Prossima: ${es ? es.nome : ''} ${et}${valori}`;
+      }
+    }
+  }
+  return '';
+}
 
 let timerFinitoFino = 0;
 function aggiornaTimer() {
@@ -461,6 +532,13 @@ function aggiornaTimer() {
     }
   }
   const visibile = !!meta.timerFine || adesso < timerFinitoFino;
+  const info = meta.timerInfo || {};
+  const prossima = $('#timer-prossima');
+  if (prossima.textContent !== (info.prossima || '')) prossima.textContent = info.prossima || '';
+  const salvaRec = $('#timer-salva');
+  const cambiato = meta.timerFine && info.seId && info.durata !== info.base;
+  salvaRec.hidden = !cambiato;
+  if (cambiato) salvaRec.textContent = `Usa sempre ${fmtDurata(info.durata)}`;
   box.hidden = !visibile;
   document.body.classList.toggle('con-timer', visibile);
 }
@@ -475,10 +553,26 @@ function timerDopoSerie(s) {
     const k = serieDi(se.id).indexOf(s);
     const sua = serieDi(comp.id)[k];
     if (sua && sua.fatta !== SI) return; // ora tocca all'altro esercizio della coppia
-    avviaTimer(Math.max(recuperoDi(se), recuperoDi(comp)));
+    const piuLungo = recuperoDi(se) >= recuperoDi(comp) ? se : comp;
+    avviaTimer(recuperoDi(piuLungo), piuLungo.id);
     return;
   }
-  avviaTimer(recuperoDi(se));
+  avviaTimer(recuperoDi(se), se.id);
+}
+
+/* «Usa sempre»: il recupero cambiato con −15/+15 diventa quello predefinito.
+ * Va nel modello se la sessione viene da un modello che ha un recupero suo, altrimenti nell'esercizio. */
+async function salvaRecupero() {
+  const info = meta.timerInfo;
+  const se = info && riga('SessioniEsercizi', info.seId);
+  if (!se) return;
+  const me = voceModello(riga('Sessioni', se.sessione_id), se.esercizio_id);
+  if (me && me.recupero_s !== '' && !isNaN(num(me.recupero_s))) { me.recupero_s = info.durata; await salva(['ModelliEsercizi', me]); }
+  else { const es = riga('Esercizi', se.esercizio_id); es.recupero_s = info.durata; await salva(['Esercizi', es]); }
+  await salvaMeta('timerInfo', Object.assign({}, info, { base: info.durata }));
+  aggiornaTimer();
+  mostraAvviso(`Recupero di ${nomeVoce('SessioniEsercizi', se)}: ${fmtDurata(info.durata)}`);
+  if (S.schermata === 'sessione') ridisegnaSePossibile();
 }
 
 /* Conto alla rovescia per le serie a durata (isometrie). */
@@ -592,12 +686,6 @@ function blocchi(lista) {
   });
   return out;
 }
-async function riordinaBlocchi(scheda, lista) {
-  const cambiate = [];
-  blocchi(lista).flat().forEach((r, i) => { if (num(r.posizione) !== i + 1) { r.posizione = i + 1; cambiate.push([scheda, r]); } });
-  if (cambiate.length) await salvaLista(cambiate);
-}
-
 /* ----- Valori dell'ultima volta ----- */
 // Le serie fatte dello stesso esercizio nell'ultima sessione precedente che le contiene.
 function serieUltimaVolta(sess, se) {
@@ -629,24 +717,43 @@ function fmtPrecedente(tipo, p) {
 /* ======================= Navigazione e disegno ======================= */
 
 const S = {
+  aperti: new Set(), // esercizi finiti riaperti a mano (altrimenti si mostrano compatti)
   schermata: 'oggi', sessioneId: null, modelloId: null, bozzaEs: null,
   vistaArchivio: 'esercizi', mostraArchiviati: false,
   ricerca: '', ricercaArchivio: '', nuovoEs: null, sceltaPer: 'sessione', importazione: null,
 };
 
+/* Cronologia per il tasto «indietro» di Android:
+ * - le pagine interne (sessione, modello, andamento…) aggiungono un passo;
+ * - tra le schede della barra in basso no: da Oggi a un'altra scheda c'è un solo passo, tra le altre si sostituisce;
+ * - un foglio dal basso aggiunge un passo, così «indietro» chiude solo il foglio;
+ * - i passi doppi (stessa schermata) vengono saltati. */
+const SCHEDE_BARRA = ['oggi', 'storico', 'esercizi', 'test'];
+const CHIAVI_STATO = ['schermata', 'sessioneId', 'modelloId', 'esercizioVisto', 'testTipo'];
+function statoAttuale() { const st = {}; CHIAVI_STATO.forEach(k => { st[k] = S[k] || null; }); return st; }
+function stessoStato(a, b) { return !!a && !!b && CHIAVI_STATO.every(k => (a[k] || null) === (b[k] || null)); }
+
 function vai(schermata, extra = {}) {
+  const da = S.schermata;
   Object.assign(S, extra);
-  if (S.schermata !== schermata) history.pushState({ schermata, sessioneId: S.sessioneId, modelloId: S.modelloId }, '');
   S.schermata = schermata;
+  const nuovo = statoAttuale();
+  const traSchede = SCHEDE_BARRA.includes(schermata) && SCHEDE_BARRA.includes(da);
+  if ((traSchede && da !== 'oggi') || stessoStato(history.state, nuovo)) history.replaceState(nuovo, '');
+  else history.pushState(nuovo, '');
   disegna();
   window.scrollTo(0, 0);
 }
 window.addEventListener('popstate', e => {
-  if (!$('#velo').hidden) chiudiFoglio();
+  // Con un foglio aperto, «indietro» chiude solo il foglio (e ferma un eventuale conto alla rovescia).
+  if (!$('#velo').hidden) {
+    conto = null;
+    $('#velo').hidden = true; $('#foglio').innerHTML = '';
+    return;
+  }
   const st = e.state || { schermata: 'oggi' };
-  S.schermata = st.schermata;
-  S.sessioneId = st.sessioneId || S.sessioneId;
-  S.modelloId = st.modelloId || S.modelloId;
+  if (stessoStato(st, statoAttuale())) { history.back(); return; } // passo doppio: si salta
+  CHIAVI_STATO.forEach(k => { if (st[k] != null) S[k] = st[k]; });
   disegna();
 });
 
@@ -666,6 +773,7 @@ function disegna() {
   if (S.schermata === 'sessione') tab = sessioneAperta(riga('Sessioni', S.sessioneId)) ? 'oggi' : 'storico';
   document.querySelectorAll('#barra button').forEach(b => b.classList.toggle('attiva', b.dataset.vai === tab));
   aggiornaCronometro();
+  if (S.schermata === 'impostazioni') mostraStatoMemoria();
 }
 
 let daRidisegnare = false;
@@ -683,6 +791,18 @@ document.addEventListener('focusout', () => {
   }, 400);
 });
 
+/* Il telefono garantisce di non cancellare i dati dell'app? (memoria «persistente») */
+async function mostraStatoMemoria() {
+  const el = $('#stato-memoria');
+  if (!el) return;
+  try {
+    const protetta = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : false;
+    const stima = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
+    const mb = stima && stima.usage ? ` · ${(stima.usage / 1048576).toLocaleString('it-IT', { maximumFractionDigits: 1 })} MB usati` : '';
+    el.innerHTML = (protetta ? 'protetta (Chrome non la cancella da solo)' : '<span class="errore">non protetta</span>: Chrome potrebbe liberarla se il telefono è pieno. I dati già inviati al foglio sono al sicuro.') + mb;
+  } catch (e) { el.textContent = 'non disponibile'; }
+}
+
 function testata(titolo, indietro, destra = '') {
   return `<div class="top">${indietro ? `<button class="icona" data-azione="${indietro}" aria-label="Indietro">${ic('arrow-left')}</button>` : ''}
     <h1 style="flex:1">${titolo}</h1>${destra}</div>`;
@@ -698,10 +818,23 @@ function disegnaOggi() {
   const sessioni = vivi('Sessioni');
   let html = testata('Oggi', '', `<button class="icona" data-vai="impostazioni" aria-label="Impostazioni">${ic('settings')}</button>`) + `<div class="pila">`;
   if (inCorso) {
-    html += `<div class="card in-corso"><div class="tenue">Sessione in corso</div>
+    const ore = (Date.now() - (dataDa(inCorso.inizio) || new Date())) / 3600e3;
+    html += `<div class="card in-corso"><div class="tenue">Sessione in corso${ore > 4 ? ` · <span class="errore">aperta da ${fmtMinuti(ore * 3600)}</span>` : ''}</div>
       <div style="font-size:17px;font-weight:500;margin:2px 0 8px">${esc(inCorso.titolo)} · iniziata alle ${fmtOraBreve(dataDa(inCorso.inizio))}</div>
       <button class="btn largo" data-azione="riprendi">Riprendi</button></div>`;
   }
+  // La settimana in corso: giorni allenati e sedute fatte (su previste, se i modelli hanno una frequenza).
+  const lun = lunedi(new Date());
+  const settimana = sessioni.filter(s => s.fine && dataDa(s.inizio) >= lun);
+  const previste = vivi('Modelli').reduce((t, m) => t + (num(m.sedute_settimana) > 0 ? num(m.sedute_settimana) : 0), 0);
+  const giorniFatti = new Set(settimana.map(s => normalizzaData(s.inizio).slice(0, 10)));
+  html += `<div class="card"><div class="fila"><span class="tenue">Questa settimana</span>
+      <span><b style="font-size:17px;font-weight:500">${settimana.length}</b> <span class="tenue">${settimana.length === 1 ? 'seduta' : 'sedute'}${previste ? ` su ${previste} previste` : ''}</span></span></div>
+    <div class="settimana-oggi">${['L', 'M', 'M', 'G', 'V', 'S', 'D'].map((n, i) => {
+      const g = new Date(lun); g.setDate(lun.getDate() + i);
+      const k = chiaveGiorno(g);
+      return `<span class="${giorniFatti.has(k) ? 'si' : ''} ${k === chiaveGiorno(new Date()) ? 'oggi' : ''}">${n}</span>`;
+    }).join('')}</div></div>`;
   html += `<button class="btn2 largo" data-azione="nuova-vuota">${ic('plus')} Sessione vuota</button>`;
   let cartella = null;
   const modelli = modelliOrdinati();
@@ -721,13 +854,16 @@ function disegnaOggi() {
 function etichettaSerie(lista, s, lettera = '') {
   if (s.tipo === 'riscaldamento') return { testo: lettera + 'R', classe: 'risc' };
   const n = lista.filter(x => x.tipo !== 'riscaldamento' && x.lato === s.lato && perPosizione(x, s) <= 0).length;
-  return { testo: `<b>${lettera}${n}</b>${s.lato && s.lato !== 'entrambi' ? ' ' + s.lato : ''}`, classe: s.tipo === 'cedimento' ? 'ced' : '' };
+  return { testo: `<b>${lettera}${n}</b>${s.lato && s.lato !== 'entrambi' ? ' ' + esc(s.lato) : ''}`, classe: s.tipo === 'cedimento' ? 'ced' : '' };
 }
 
+// enterkeyhint="next": sulla tastiera compare «Avanti», che porta al campo successivo (vedi più sotto).
 function campoNum(scheda, r, campo) {
   const v = campo === 'durata_min' ? (r.durata_s === '' ? '' : Math.round(num(r.durata_s) / 6) / 10) : r[campo];
-  return `<input class="num" inputmode="decimal" autocomplete="off" data-scheda="${scheda}" data-id="${esc(r.id)}" data-campo="${campo}" value="${esc(fmtNum(v))}">`;
+  return `<input class="num" inputmode="decimal" enterkeyhint="next" autocomplete="off" data-scheda="${scheda}" data-id="${esc(r.id)}" data-campo="${campo}" value="${esc(fmtNum(v))}">`;
 }
+// RPE nascosto se scelto nelle Impostazioni: i numeri hanno più spazio.
+function conRpe() { return !meta.nascondiRpe; }
 
 function rigaSerie(scheda, tipo, lista, s, lettera, precedenti) {
   const sessione = scheda === 'Serie';
@@ -740,15 +876,22 @@ function rigaSerie(scheda, tipo, lista, s, lettera, precedenti) {
       : `<span class="ultima">—</span>`;
   }
   COLONNE_TIPO[tipo].forEach(([c]) => { celle += campoNum(scheda, s, c); });
-  celle += campoNum(scheda, s, sessione ? 'rpe' : 'rpe_previsto');
+  if (conRpe()) celle += campoNum(scheda, s, sessione ? 'rpe' : 'rpe_previsto');
   if (sessione) celle += `<button class="spunta" data-azione="spunta" data-id="${esc(s.id)}" aria-label="Serie fatta">${ic('check')}</button>`;
   return `<div class="scorri"><div class="scorri-fondo">${ic('trash')}${ic('trash')}</div>
-    <div class="serie c-${esc(tipo)} ${sessione ? '' : 'mod'} ${s.fatta === SI ? 'fatta' : ''}" data-scheda="${scheda}" data-id="${esc(s.id)}">${celle}</div></div>`;
+    <div class="serie c-${esc(tipo)} ${sessione ? '' : 'mod'} ${conRpe() ? '' : 'no-rpe'} ${s.fatta === SI ? 'fatta' : ''}" data-scheda="${scheda}" data-id="${esc(s.id)}">${celle}</div></div>`;
 }
 
 function intestazioneSerie(tipo, sessione) {
-  return `<div class="serie intest c-${esc(tipo)} ${sessione ? '' : 'mod'}"><span>Serie</span>${sessione ? '<span>Ultima volta</span>' : ''}
-    ${COLONNE_TIPO[tipo].map(([, t]) => `<span>${t}</span>`).join('')}<span>RPE</span>${sessione ? '<span></span>' : ''}</div>`;
+  return `<div class="serie intest c-${esc(tipo)} ${sessione ? '' : 'mod'} ${conRpe() ? '' : 'no-rpe'}"><span>Serie</span>${sessione ? '<span>Ultima</span>' : ''}
+    ${COLONNE_TIPO[tipo].map(([, t]) => `<span>${t}</span>`).join('')}${conRpe() ? '<span>RPE</span>' : ''}${sessione ? '<span></span>' : ''}</div>`;
+}
+
+/* Riassunto delle serie fatte di un esercizio, per la scheda compatta (es. «13×10 · 13×10 · 14×8»). */
+function riassuntoSerie(tipo, serie) {
+  const fatte = serie.filter(s => s.fatta === SI && s.tipo !== 'riscaldamento');
+  const testo = fatte.slice(0, 5).map(s => fmtPrecedente(tipo, s).replace(' rip', '').replace(' × ', '×')).join(' · ');
+  return testo + (fatte.length > 5 ? ` · +${fatte.length - 5}` : '');
 }
 
 function tipoDi(es) { return es && COLONNE_TIPO[es.tipo] ? es.tipo : 'peso_rip'; }
@@ -760,13 +903,24 @@ function disegnaEsercizioSessione(sess, se, lettera) {
   const serie = serieDi(se.id);
   const me = voceModello(sess, se.esercizio_id);
   const rec = recuperoDi(se);
+  const nome = `${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}`;
+  // Esercizio con tutte le serie fatte, in una sessione in corso: scheda compatta (si riapre toccandola).
+  const finito = sessioneAperta(sess) && serie.length > 0 && serie.every(s => s.fatta === SI);
+  if (finito && !S.aperti.has(se.id)) {
+    return `<div class="card fila compatta" data-se="${esc(se.id)}">
+      <button class="compatta-apri" data-azione="espandi-es" data-id="${esc(se.id)}">
+        <span class="es-titolo" data-tieni="SessioniEsercizi" data-id="${esc(se.id)}">${nome}</span>
+        <span class="tenue" style="display:block">${ic('check')} ${serie.length} ${serie.length === 1 ? 'serie' : 'serie'} · ${esc(riassuntoSerie(tipo, serie))}</span>
+      </button>${ic('chevron-down')}</div>`;
+  }
   const precedenti = serieUltimaVolta(sess, se);
   let html = `<div class="card" style="padding:12px 8px" data-se="${esc(se.id)}">
     <div class="fila" style="padding:0 4px 8px;align-items:flex-start"><div>
-      <div class="es-titolo" data-tieni="SessioniEsercizi" data-id="${esc(se.id)}">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}</div>
+      <div class="es-titolo" data-tieni="SessioniEsercizi" data-id="${esc(se.id)}">${nome}</div>
       ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}
       <span class="tenue">${rec ? 'recupero ' + fmtDurata(rec) : 'senza recupero'}</span>
       ${me && me.nota ? `<p class="indicazione">${esc(me.nota)}</p>` : ''}
+      ${es && es.nota ? `<p class="indicazione descrizione">${esc(es.nota)}</p>` : ''}
     </div><button class="icona" data-azione="menu-es" data-scheda="SessioniEsercizi" data-id="${esc(se.id)}" aria-label="Opzioni esercizio">${ic('dots')}</button></div>`;
   html += intestazioneSerie(tipo, true);
   serie.forEach(s => { html += rigaSerie('Serie', tipo, serie, s, lettera, precedenti); });
@@ -777,7 +931,7 @@ function disegnaEsercizioSessione(sess, se, lettera) {
     const prossima = serie.find(s => s.fatta !== SI);
     if (prossima) {
       const et = etichettaSerie(serie, prossima, lettera);
-      html += `<div style="padding:8px 4px 0"><button class="btn largo" data-azione="avvia-durata" data-id="${esc(prossima.id)}">${ic('timer')} Avvia serie ${et.testo.replace(/<[^>]+>/g, '')}${prossima.durata_s !== '' ? ' · ' + prossima.durata_s + '″' : ''}</button></div>`;
+      html += `<div style="padding:8px 4px 0"><button class="btn largo" data-azione="avvia-durata" data-id="${esc(prossima.id)}">${ic('timer')} Avvia serie ${et.testo.replace(/<[^>]+>/g, '')}${prossima.durata_s !== '' ? ' · ' + numH(prossima.durata_s) + '″' : ''}</button></div>`;
     }
   }
   html += `<div style="padding:8px 4px 0"><input class="testo" placeholder="Nota sull'esercizio" data-se-campo="nota" data-se="${esc(se.id)}" value="${esc(se.nota)}"></div>`;
@@ -807,18 +961,40 @@ function disegnaSessione() {
   const aperta = sessioneAperta(sess);
   let html = `<div class="top">
     <button style="background:none;border:none;text-align:left;padding:0;min-height:48px;cursor:pointer" data-azione="rinomina-sessione">
-      <div class="tenue">${esc(sess.titolo)} ${aperta ? '' : '· ' + fmtGiorno(dataDa(sess.inizio))}</div>
+      <div class="tenue">${esc(sess.titolo)} ${aperta ? '' : '· ' + fmtGiorno(dataDa(sess.inizio))} ${ic('edit')}</div>
       <div style="font-size:22px;font-weight:500" id="cronometro"></div></button>
     ${aperta ? `<button class="btn verde" data-azione="fine-sessione">Fine</button>` : `<button class="btn2" data-azione="chiudi-sessione">Chiudi</button>`}
   </div><div class="pila">`;
+  // Sessione aperta da più di 4 ore: probabilmente ci si è dimenticati di premere «Fine».
+  const ore = (Date.now() - (dataDa(sess.inizio) || new Date())) / 3600e3;
+  if (aperta && ore > 4) {
+    const ultima = oraUltimaSerie(sess);
+    html += `<div class="card avviso-card"><b>Sessione aperta da ${fmtMinuti(ore * 3600)}</b>
+      <p class="tenue" style="margin:4px 0 10px">Forse ti sei dimenticato di premere «Fine».</p>
+      <div class="riga-btn">${ultima ? `<button class="btn" data-azione="fine-a" data-valore="${esc(ultima)}">Chiudi alle ${esc(ultima.slice(11, 16))}</button>` : ''}
+        <button class="btn2" data-azione="rinomina-sessione">Correggi gli orari</button></div></div>`;
+  }
   const esercizi = eserciziDi(sess.id);
   html += `<div class="blocchi pila">${disegnaBlocchi(esercizi, (se, lettera) => disegnaEsercizioSessione(sess, se, lettera))}</div>`;
   if (!esercizi.length) html += `<div class="vuoto-msg">Nessun esercizio. Aggiungine uno.</div>`;
+  if (esercizi.length) {
+    html += `<div class="riga-btn">${aperta ? '' : `<button class="btn2" data-azione="ripeti-sessione">${ic('play')} Ripeti</button>`}
+      <button class="btn2" data-azione="salva-come-modello">${ic('copy')} Salva come modello</button></div>`;
+  }
   html += `<button class="btn2 largo" data-azione="aggiungi-es" data-per="sessione">${ic('plus')} Esercizio</button>
     <textarea class="testo" placeholder="Nota sulla sessione" data-sess-campo="nota">${esc(sess.nota)}</textarea>
     <button class="btn2 pericolo largo" data-azione="elimina-sessione">${ic('trash')} ${aperta ? 'Annulla la sessione' : 'Elimina la sessione'}</button>
     <div class="stato-sync" data-stato-sync>${testoStatoSync()}</div></div>`;
   return html;
+}
+
+// Ora dell'ultima serie spuntata di una sessione («AAAA-MM-GG HH:mm:ss»), oppure '' se nessuna.
+function oraUltimaSerie(sess) {
+  let ultima = '';
+  eserciziDi(sess.id).forEach(se => serieDi(se.id).forEach(s => {
+    if (s.fatta === SI && String(s.aggiornato_il) > ultima) ultima = String(s.aggiornato_il);
+  }));
+  return ultima && ultima > String(sess.inizio) ? ultima : '';
 }
 
 function aggiornaCronometro() {
@@ -845,21 +1021,23 @@ function disegnaCalendario(sessioni) {
   sessioni.forEach(s => { const k = String(s.inizio).slice(0, 10); giorni.set(k, (giorni.get(k) || 0) + 1); });
   const oggi = chiaveGiorno(new Date());
   const primo = new Date(mese.getFullYear(), mese.getMonth(), 1);
-  const nelMese = new Date(mese.getFullYear(), mese.getMonth() + 1, 0).getDate();
-  const vuoti = (primo.getDay() + 6) % 7; // lunedì = prima colonna
+  const ultimo = new Date(mese.getFullYear(), mese.getMonth() + 1, 0);
+  // Settimane sempre complete: si parte dal lunedì della prima settimana e si arriva alla domenica dell'ultima.
+  const inizio = new Date(primo); inizio.setDate(1 - (primo.getDay() + 6) % 7);
+  const fine = new Date(ultimo); fine.setDate(ultimo.getDate() + (7 - ultimo.getDay()) % 7);
   const titolo = primo.toLocaleDateString('it-IT', { month: 'long', year: 'numeric' });
   const quante = [...giorni.entries()].filter(([k]) => k.startsWith(chiaveGiorno(primo).slice(0, 7))).reduce((t, [, n]) => t + n, 0);
   let html = `<div class="card"><div class="fila"><button class="icona" data-azione="mese" data-valore="-1" aria-label="Mese precedente">${ic('arrow-left')}</button>
     <span style="text-align:center"><span style="display:block;font-size:16px;font-weight:500;text-transform:capitalize">${titolo}</span><span class="tenue">${quante} ${quante === 1 ? 'seduta' : 'sedute'}</span></span>
     <button class="icona" data-azione="mese" data-valore="1" aria-label="Mese successivo" style="transform:scaleX(-1)">${ic('arrow-left')}</button></div>
     <div class="calendario">${['lun', 'mar', 'mer', 'gio', 'ven', 'sab', 'dom'].map(n => `<span class="tenue">${n}</span>`).join('')}`;
-  for (let i = 0; i < vuoti; i++) html += '<span></span>';
-  for (let g = 1; g <= nelMese; g++) {
-    const k = chiaveGiorno(new Date(mese.getFullYear(), mese.getMonth(), g));
-    const classi = ['giorno', giorni.has(k) ? 'si' : '', k === oggi ? 'oggi' : '', k === S.giornoStorico ? 'scelto' : ''].join(' ');
+  for (const d = new Date(inizio); d <= fine; d.setDate(d.getDate() + 1)) {
+    const k = chiaveGiorno(d);
+    const fuori = d.getMonth() !== primo.getMonth(); // giorno del mese prima o dopo: in grigio
+    const classi = ['giorno', giorni.has(k) ? 'si' : '', k === oggi ? 'oggi' : '', k === S.giornoStorico ? 'scelto' : '', fuori ? 'fuori' : ''].join(' ');
     html += giorni.has(k)
-      ? `<button class="${classi}" data-azione="giorno-storico" data-valore="${k}">${g}</button>`
-      : `<span class="${classi}">${g}</span>`;
+      ? `<button class="${classi}" data-azione="giorno-storico" data-valore="${k}">${d.getDate()}</button>`
+      : `<span class="${classi}">${d.getDate()}</span>`;
   }
   return html + `</div></div>`;
 }
@@ -974,28 +1152,32 @@ function disegnaStatistiche(sessioni) {
     <table class="tabella">${[...perModello.entries()].sort((a, b) => b[1] - a[1]).map(([n, v]) => `<tr><td>${esc(n)}</td><td>${v}</td></tr>`).join('') || '<tr><td>Nessuna seduta</td><td></td></tr>'}</table></div>`;
 
   // 4) Volume settimanale per gruppo muscolare (kg × ripetizioni delle serie fatte, senza riscaldamento).
-  const vol = new Map(); // gruppo -> [sett0, sett1, sett2, sett3]
+  const vol = new Map(); // gruppo (senza maiuscole e accenti) -> { nome, v: [sett0..sett3] }
+  const senzaGruppo = new Set();
   sessioni.forEach(s => {
     const k = settimana(s);
     if (k < 0 || k > 3) return;
     eserciziDi(s.id).forEach(se => {
       const es = riga('Esercizi', se.esercizio_id);
-      const gruppo = (es && es.gruppo) || 'senza gruppo';
+      const nomeGruppo = String((es && es.gruppo) || '').trim();
+      if (!nomeGruppo && es) senzaGruppo.add(es.id);
+      const chiave = semplifica(nomeGruppo) || 'senza gruppo';
       serieDi(se.id).forEach(x => {
         if (x.fatta !== SI || x.tipo === 'riscaldamento') return;
         const p = num(x.peso_kg), r = num(x.rip);
         if (isNaN(p) || isNaN(r) || !p || !r) return;
-        if (!vol.has(gruppo)) vol.set(gruppo, [0, 0, 0, 0]);
-        vol.get(gruppo)[k] += p * r;
+        if (!vol.has(chiave)) vol.set(chiave, { nome: nomeGruppo ? nomeGruppo[0].toUpperCase() + nomeGruppo.slice(1) : 'Senza gruppo', v: [0, 0, 0, 0] });
+        vol.get(chiave).v[k] += p * r;
       });
     });
   });
   const kg = v => v ? Math.round(v).toLocaleString('it-IT') : '–';
   html += `<div class="card"><h2>Volume per gruppo</h2><p class="tenue" style="margin:2px 0 6px">kg × ripetizioni delle serie fatte</p>
     <table class="tabella"><tr><th>Gruppo</th><th>questa sett.</th><th>scorsa</th><th>media 4 sett.</th></tr>
-    ${[...vol.entries()].sort((a, b) => b[1].reduce((x, y) => x + y) - a[1].reduce((x, y) => x + y)).map(([g, v]) =>
-      `<tr><td>${esc(g)}</td><td>${kg(v[0])}</td><td>${kg(v[1])}</td><td>${kg(v.reduce((a, b) => a + b) / 4)}</td></tr>`).join('') || '<tr><td colspan="4">Nessuna serie con peso nelle ultime 4 settimane</td></tr>'}
-    </table></div>`;
+    ${[...vol.values()].sort((a, b) => b.v.reduce((x, y) => x + y) - a.v.reduce((x, y) => x + y)).map(({ nome, v }) =>
+      `<tr><td>${esc(nome)}</td><td>${kg(v[0])}</td><td>${kg(v[1])}</td><td>${kg(v.reduce((a, b) => a + b) / 4)}</td></tr>`).join('') || '<tr><td colspan="4">Nessuna serie con peso nelle ultime 4 settimane</td></tr>'}
+    </table>
+    ${senzaGruppo.size ? `<button class="btn2 largo" style="margin-top:8px" data-azione="vai-da-completare">${senzaGruppo.size} ${senzaGruppo.size === 1 ? 'esercizio usato non ha' : 'esercizi usati non hanno'} il gruppo: completali</button>` : ''}</div>`;
   html += `<p class="tenue" style="text-align:center">Record e grafici di ogni esercizio: scheda Esercizi, tocca un esercizio.</p>`;
   return html;
 }
@@ -1049,7 +1231,7 @@ function disegnaAndamentoEsercizio() {
 
   const legenda = latiPresenti.length > 1 ? `<div class="legenda">${latiPresenti.map(l => `<span style="color:${colore(l)}">● ${nomeLato[l]}</span>`).join('')}</div>` : '';
   const grafico = (titolo, unita, valore) => {
-    const serie = latiPresenti.map(l => ({ colore: colore(l), punti: dati.filter(x => x.lati[l] && valore(x.lati[l]) != null).map(x => ({ t: x.t, y: valore(x.lati[l]) })) }));
+    const serie = latiPresenti.map(l => ({ nome: nomeLato[l], colore: colore(l), punti: dati.filter(x => x.lati[l] && valore(x.lati[l]) != null).map(x => ({ t: x.t, y: valore(x.lati[l]) })) }));
     const punti = serie.reduce((t, s) => t + s.punti.length, 0);
     if (!punti) return '';
     return `<div class="card"><h2>${titolo} <span class="tenue">(${unita})</span></h2>${legenda}
@@ -1074,7 +1256,7 @@ function disegnaAndamentoEsercizio() {
 function graficoRiabilitazione(es, dati) {
   const riab = RIAB[es.area];
   if (!riab) return '';
-  const serie = riab.campi.map(([c], i) => ({ colore: COLORE_RIAB[i], punti: dati.filter(x => x.se[c] !== '' && !isNaN(num(x.se[c]))).map(x => ({ t: x.t, y: num(x.se[c]) })) }));
+  const serie = riab.campi.map(([c, n], i) => ({ nome: n.toLowerCase(), colore: COLORE_RIAB[i], punti: dati.filter(x => x.se[c] !== '' && !isNaN(num(x.se[c]))).map(x => ({ t: x.t, y: num(x.se[c]) })) }));
   const punti = serie.reduce((t, s) => t + s.punti.length, 0);
   if (!punti) return `<div class="card"><h2>${riab.titolo.replace('Riabilitazione', 'Sensazioni')}</h2><p class="tenue">Nessun valore registrato in questo periodo.</p></div>`;
   return `<div class="card"><h2>${riab.titolo.replace('Riabilitazione', 'Sensazioni')} <span class="tenue">(0-10)</span></h2>
@@ -1106,11 +1288,15 @@ function disegnaRecord(tipo, tutto, lati, nomeLato) {
 }
 
 /* ---------- Esercizi e modelli (archivio) ---------- */
+// Testo semplificato per le ricerche: minuscole e senza accenti («àlzate» trova «alzate»).
+function semplifica(t) { return String(t == null ? '' : t).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim(); }
 function elencoEsercizi(filtro, conArchiviati = false) {
-  const f = filtro.trim().toLowerCase();
-  return vivi('Esercizi').filter(e => (conArchiviati || e.archiviato !== SI) && (!f || String(e.nome).toLowerCase().includes(f) || String(e.gruppo).toLowerCase().includes(f)))
+  const f = semplifica(filtro);
+  return vivi('Esercizi').filter(e => (conArchiviati || e.archiviato !== SI) && (!f || semplifica(e.nome).includes(f) || semplifica(e.gruppo).includes(f)))
     .sort(perNome);
 }
+// Esercizi «da completare»: senza gruppo muscolare o senza recupero (tipicamente quelli arrivati da Strong).
+function daCompletare(e) { return e.archiviato !== SI && (!String(e.gruppo || '').trim() || !(num(e.recupero_s) > 0)); }
 function disegnaArchivio() {
   const vista = S.vistaArchivio;
   let html = testata('Esercizi') + `<div class="pila">
@@ -1129,14 +1315,19 @@ function disegnaArchivio() {
     if (!modelli.length) html += `<div class="vuoto-msg">Nessun modello.</div>`;
     return html + `</div>`;
   }
+  const quanti = vivi('Esercizi').filter(daCompletare).length;
   html += `<input class="testo" type="search" placeholder="Cerca un esercizio" data-ricerca="archivio" value="${esc(S.ricercaArchivio)}">
     <div class="riga-btn"><button class="btn2" data-azione="nuovo-esercizio">${ic('plus')} Nuovo esercizio</button>
       <button class="btn2" data-azione="mostra-archiviati">${S.mostraArchiviati ? 'Nascondi archiviati' : 'Mostra archiviati'}</button></div>
+    ${quanti || S.daCompletare ? `<button class="scelta ${S.daCompletare ? 'si' : ''}" data-azione="da-completare" style="align-self:flex-start">Da completare (${quanti})</button>` : ''}
+    ${S.daCompletare ? `<p class="tenue" style="margin:0">Esercizi senza gruppo muscolare o senza recupero: le statistiche per gruppo e il timer ne hanno bisogno.</p>
+      ${vivi('Esercizi').some(e => e.archiviato !== SI && !(num(e.recupero_s) > 0)) ? `<button class="btn2 largo" data-azione="recupero-90">Recupero 90 s a quelli che non ce l'hanno</button>` : ''}` : ''}
     <div id="lista-archivio" class="pila">${righeArchivio()}</div></div>`;
   return html;
 }
 function righeArchivio() {
-  const lista = elencoEsercizi(S.ricercaArchivio, S.mostraArchiviati);
+  let lista = elencoEsercizi(S.ricercaArchivio, S.mostraArchiviati);
+  if (S.daCompletare) lista = lista.filter(daCompletare);
   if (!lista.length) return `<div class="vuoto-msg">Nessun esercizio trovato.</div>`;
   return lista.map(e => `<button class="card modello" data-azione="vedi-esercizio" data-id="${esc(e.id)}">
     <span style="display:block;font-size:16px">${esc(e.nome)}${e.archiviato === SI ? ' <span class="tenue">(archiviato)</span>' : ''}</span>
@@ -1222,12 +1413,21 @@ function disegnaModello() {
 
 /* ---------- Test ---------- */
 // Data del test: solo il giorno, «AAAA-MM-GG». Si legge a mezzogiorno per non cambiare giorno col fuso.
-function giornoDa(t) { return /^\d{4}-\d{2}-\d{2}/.test(String(t)) ? new Date(String(t).slice(0, 10) + 'T12:00:00') : null; }
+function giornoDa(t) {
+  const g = normalizzaData(t, 'giorno');
+  return /^\d{4}-\d{2}-\d{2}/.test(g) ? new Date(g.slice(0, 10) + 'T12:00:00') : null;
+}
 function fmtGiornoBreve(t) {
   const d = giornoDa(t);
-  if (!d) return String(t || '');
+  if (!d) return esc(String(t || ''));
   const stessoAnno = d.getFullYear() === new Date().getFullYear();
   return d.toLocaleDateString('it-IT', stessoAnno ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function giorniFa(data) {
+  const d = giornoDa(data);
+  if (!d) return '';
+  const n = Math.round((giornoDa(chiaveGiorno(new Date())) - d) / 864e5);
+  return n <= 0 ? 'ultima prova oggi' : n === 1 ? 'ultima prova ieri' : `ultima prova ${n} giorni fa`;
 }
 function infoTest(tipo) { return TEST[tipo] || { nome: tipo, breve: tipo, unita: '' }; }
 function unitaTest(tipo, righe) { return infoTest(tipo).unita || (righe.find(r => r.unita) || {}).unita || ''; }
@@ -1236,7 +1436,7 @@ function unitaTest(tipo, righe) { return infoTest(tipo).unita || (righe.find(r =
 function proveDi(tipo) {
   const perData = new Map();
   vivi('Test').filter(r => r.tipo === tipo).forEach(r => {
-    const data = String(r.data).slice(0, 10);
+    const data = normalizzaData(r.data, 'giorno').slice(0, 10);
     if (!perData.has(data)) perData.set(data, { data, dx: null, sx: null, altri: [] });
     const p = perData.get(data);
     if (r.lato === 'dx' || r.lato === 'sx') {
@@ -1249,7 +1449,7 @@ function tipiTest() {
   const presenti = new Set(vivi('Test').map(r => r.tipo).filter(Boolean));
   return [...Object.keys(TEST), ...[...presenti].filter(t => !TEST[t]).sort()];
 }
-function valoreConUnita(r, unita) { return r && r.valore !== '' ? `${fmtNum(r.valore)}${unita ? ' ' + unita : ''}` : '–'; }
+function valoreConUnita(r, unita) { return r && r.valore !== '' ? esc(`${fmtNum(r.valore)}${unita ? ' ' + unita : ''}`) : '–'; }
 
 /* ---------- Grafico a linee (SVG fatto a mano), riusabile ---------- */
 // serie: [{ nome, colore, punti: [{ t: Date, y: numero }] }]
@@ -1268,7 +1468,10 @@ function graficoLinee(serie, unita) {
   const tMin = Math.min(...tutti.map(p => +p.t)), tMax = Math.max(...tutti.map(p => +p.t));
   const X = t => tMax === tMin ? (sx + L - dx) / 2 : sx + (t - tMin) / (tMax - tMin) * (L - sx - dx);
   const Y = y => su + (yMax - y) / (yMax - yMin) * (A - su - giu);
-  let svg = `<svg viewBox="0 0 ${L} ${A}" width="100%" role="img" aria-label="Andamento nel tempo${unita ? ' in ' + esc(unita) : ''}">`;
+  // Ogni grafico si ricorda i suoi dati: toccandolo si vede il valore del giorno più vicino.
+  const id = 'g' + (++contaGrafici);
+  GRAFICI.set(id, { serie, unita, tMin, tMax, sx, dx, L, X, A, su, giu });
+  let svg = `<svg viewBox="0 0 ${L} ${A}" width="100%" role="img" aria-label="Andamento nel tempo${unita ? ' in ' + esc(unita) : ''}. Tocca per vedere i valori." data-grafico="${id}" style="cursor:pointer">`;
   for (let v = yMin; v <= yMax + passo / 2; v += passo) {
     const y = Y(v);
     svg += `<line x1="${sx}" y1="${y}" x2="${L - dx}" y2="${y}" stroke="#2a2e36"/><text x="${sx - 6}" y="${y + 4}" text-anchor="end" fill="#9aa3af" font-size="11">${fmtNum(Math.round(v * 10) / 10)}</text>`;
@@ -1285,8 +1488,30 @@ function graficoLinee(serie, unita) {
     // Con tanti punti si disegna solo la linea (e l'ultimo punto), altrimenti i pallini si accavallano.
     (punti.length > 30 ? punti.slice(-1) : punti).forEach(p => { svg += `<circle cx="${X(+p.t).toFixed(1)}" cy="${Y(p.y).toFixed(1)}" r="3.5" fill="${s.colore}"/>`; });
   });
-  return svg + '</svg>';
+  svg += `<line class="segno" x1="0" y1="${su}" x2="0" y2="${A - giu}" stroke="#cbd2dc" stroke-dasharray="3 3" visibility="hidden"/>`;
+  return svg + `</svg><div class="valore-grafico" data-valore-di="${id}">Tocca il grafico per vedere i valori</div>`;
 }
+const GRAFICI = new Map();
+let contaGrafici = 0;
+// Tocco su un grafico: giorno più vicino, con i valori di ogni linea in quel giorno.
+document.addEventListener('click', e => {
+  const svg = e.target.closest('svg[data-grafico]');
+  if (!svg) return;
+  const g = GRAFICI.get(svg.dataset.grafico);
+  if (!g) return;
+  const b = svg.getBoundingClientRect();
+  const x = (e.clientX - b.left) / b.width * g.L;
+  const giorni = [...new Set(g.serie.flatMap(s => s.punti.map(p => +p.t)))];
+  const t = giorni.reduce((m, d) => Math.abs(g.X(d) - x) < Math.abs(g.X(m) - x) ? d : m, giorni[0]);
+  const valori = g.serie.map(s => {
+    const p = s.punti.find(q => +q.t === t);
+    return p ? `<span style="color:${s.colore}">${s.nome ? esc(s.nome) + ' ' : ''}<b>${numH(Math.round(p.y * 10) / 10)}</b></span>` : '';
+  }).filter(Boolean);
+  const testo = svg.nextElementSibling;
+  if (testo) testo.innerHTML = `${new Date(t).toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })} · ${valori.join(' · ')}${g.unita ? ' <span class="tenue">' + esc(g.unita) + '</span>' : ''}`;
+  const segno = svg.querySelector('.segno');
+  segno.setAttribute('x1', g.X(t)); segno.setAttribute('x2', g.X(t)); segno.setAttribute('visibility', 'visible');
+});
 
 /* ---------- Test ---------- */
 function disegnaTest() {
@@ -1296,11 +1521,12 @@ function disegnaTest() {
     const info = infoTest(tipo), prove = proveDi(tipo), u = unitaTest(tipo, vivi('Test').filter(r => r.tipo === tipo));
     const ultima = prove[0], prima = prove[1];
     html += `<button class="card modello" data-azione="apri-test" data-valore="${esc(tipo)}">
-      <span class="fila"><span style="font-size:16px">${esc(info.nome)}</span><span class="tenue">${ultima ? fmtGiornoBreve(ultima.data) + ' ' + ic('chevron-right') : 'mai fatto'}</span></span>`;
+      <span class="fila"><span style="font-size:16px">${esc(info.nome)}</span><span class="tenue">${ultima ? fmtGiornoBreve(ultima.data) + ' ' + ic('chevron-right') : 'mai fatto'}</span></span>
+      ${ultima ? `<span class="tenue" style="display:block">${giorniFa(ultima.data)}</span>` : ''}`;
     if (ultima) {
-      html += `<span class="valori-test"><span><span class="tenue lato-test">destro</span><b style="color:${COLORE_LATO.dx}">${ultima.dx && ultima.dx.valore !== '' ? fmtNum(ultima.dx.valore) : '–'}</b> ${esc(u)}</span>
-        <span><span class="tenue lato-test">sinistro</span><b style="color:${COLORE_LATO.sx}">${ultima.sx && ultima.sx.valore !== '' ? fmtNum(ultima.sx.valore) : '–'}</b> ${esc(u)}</span></span>`;
-      if (prima) html += `<span class="tenue" style="display:block;margin-top:4px">il ${fmtGiornoBreve(prima.data)}: ${prima.dx ? fmtNum(prima.dx.valore) : '–'} · ${prima.sx ? fmtNum(prima.sx.valore) : '–'} ${esc(u)}</span>`;
+      html += `<span class="valori-test"><span><span class="tenue lato-test">destro</span><b style="color:${COLORE_LATO.dx}">${ultima.dx && ultima.dx.valore !== '' ? numH(ultima.dx.valore) : '–'}</b> ${esc(u)}</span>
+        <span><span class="tenue lato-test">sinistro</span><b style="color:${COLORE_LATO.sx}">${ultima.sx && ultima.sx.valore !== '' ? numH(ultima.sx.valore) : '–'}</b> ${esc(u)}</span></span>`;
+      if (prima) html += `<span class="tenue" style="display:block;margin-top:4px">il ${fmtGiornoBreve(prima.data)}: ${prima.dx ? numH(prima.dx.valore) : '–'} · ${prima.sx ? numH(prima.sx.valore) : '–'} ${esc(u)}</span>`;
     }
     html += `</button>`;
   });
@@ -1313,6 +1539,7 @@ function disegnaAndamentoTest() {
   let html = testata(esc(info.breve), 'torna-test', `<button class="icona" data-azione="nuovo-test" data-valore="${esc(tipo)}" aria-label="Nuovo test">${ic('plus')}</button>`) + `<div class="pila">`;
   if (!prove.length) return html + `<div class="vuoto-msg">Nessuna prova registrata.</div></div>`;
   const serie = ['dx', 'sx'].map(lato => ({
+    nome: lato === 'dx' ? 'destro' : 'sinistro',
     colore: COLORE_LATO[lato],
     punti: prove.filter(p => p[lato] && p[lato].valore !== '' && !isNaN(num(p[lato].valore))).map(p => ({ t: giornoDa(p.data), y: num(p[lato].valore) })),
   }));
@@ -1322,10 +1549,10 @@ function disegnaAndamentoTest() {
   html += `<div class="card" style="padding:6px 8px"><table class="tabella">
     <tr><th>Data</th><th style="color:${COLORE_LATO.dx}">dx</th><th style="color:${COLORE_LATO.sx}">sx</th><th>dolore dx · sx</th></tr>`;
   prove.forEach(p => {
-    const dol = r => r && r.dolore !== '' ? fmtNum(r.dolore) : '–';
+    const dol = r => r && r.dolore !== '' ? numH(r.dolore) : '–';
     const note = [p.dx && p.dx.nota ? 'dx: ' + p.dx.nota : '', p.sx && p.sx.nota ? 'sx: ' + p.sx.nota : '', ...p.altri.map(r => `${r.lato || '?'}: ${fmtNum(r.valore)} ${r.nota || ''}`)].filter(Boolean);
     html += `<tr data-azione="modifica-test" data-valore="${esc(p.data)}"><td>${fmtGiornoBreve(p.data)}</td>
-      <td>${p.dx ? fmtNum(p.dx.valore) || '–' : '–'}</td><td>${p.sx ? fmtNum(p.sx.valore) || '–' : '–'}</td><td>${dol(p.dx)} · ${dol(p.sx)}</td></tr>`;
+      <td>${p.dx ? numH(p.dx.valore) || '–' : '–'}</td><td>${p.sx ? numH(p.sx.valore) || '–' : '–'}</td><td>${dol(p.dx)} · ${dol(p.sx)}</td></tr>`;
     if (note.length) html += `<tr data-azione="modifica-test" data-valore="${esc(p.data)}" class="riga-nota"><td colspan="4">${note.map(esc).join(' · ')}</td></tr>`;
   });
   return html + `</table></div><p class="tenue" style="text-align:center;margin:0">Tocca una riga per correggerla o eliminarla.</p></div>`;
@@ -1385,8 +1612,16 @@ function disegnaImpostazioni() {
       <h2>Sincronizzazione</h2>
       <p class="tenue" style="margin:8px 0">Modifiche in coda: <b>${codaQuante}</b><br>
         Ultimo invio: ${esc(meta.ultimoInvio || 'mai')}<br>Ultima lettura dal foglio: ${esc(meta.ultimaLettura || 'mai')}<br>
-        ${meta.ultimoErrore ? `<span class="errore">Ultimo errore: ${esc(meta.ultimoErrore)}</span>` : 'Nessun errore'}</p>
+        ${meta.ultimoErrore ? `<span class="errore">Ultimo errore: ${esc(meta.ultimoErrore)}</span>` : 'Nessun errore'}<br>
+        Memoria del telefono: <span id="stato-memoria">…</span></p>
       <div class="riga-btn"><button class="btn2" data-azione="imp-sync">Sincronizza ora</button><button class="btn2" data-azione="imp-riscarica">Rileggi tutto</button></div>
+    </div>
+    <div class="card">
+      <h2>Sessione</h2>
+      <p class="tenue" style="margin:8px 0">Colonna RPE nelle serie. Se non la usi, nascondila: i numeri hanno più spazio. I valori già scritti restano nel foglio.</p>
+      <div class="scelte" style="margin:0">
+        <button class="scelta ${conRpe() ? 'si' : ''}" data-azione="rpe" data-valore="mostra">Mostra RPE</button>
+        <button class="scelta ${conRpe() ? '' : 'si'}" data-azione="rpe" data-valore="nascondi">Nascondi RPE</button></div>
     </div>
     <div class="card">
       <h2>Storico di Strong</h2>
@@ -1401,7 +1636,9 @@ function disegnaImpostazioni() {
     </div>
     <div class="card">
       <h2>Versione</h2>
-      <p class="tenue" style="margin:8px 0">Gym · versione <b>${VERSIONE_APP}</b> · unità di peso: kg</p>
+      <p class="tenue" style="margin:8px 0">Gym · versione <b>${VERSIONE_APP}</b> · unità di peso: kg<br>
+        Ponte (Code.gs): ${meta.versionePonte ? `versione <b>${esc(meta.versionePonte)}</b>${meta.versionePonte < 2 ? ' · <span class="errore">da aggiornare</span>' : ''}` : 'non ancora letto'}<br>
+        Schema del foglio: ${meta.versioneSchema ? `versione ${esc(meta.versioneSchema)}${meta.versioneSchema !== '1' ? ' · <span class="errore">diversa da quella che l\'app conosce (1)</span>' : ''}` : '–'}</p>
       <button class="btn2 largo" data-azione="cerca-aggiornamenti">Cerca aggiornamenti</button>
     </div>
   </div>`;
@@ -1430,8 +1667,11 @@ function leggiCSV(testo) {
   return righe.filter(x => x.some(v => v.trim() !== ''));
 }
 
-function normalizzaData(t) {
-  const m = String(t).trim().match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+// Data e ora complete «AAAA-MM-GG HH:mm:ss» (sempre con i secondi), per riconoscere le sessioni già importate.
+// Accetta anche il formato italiano; restituisce null se non è una data con l'ora.
+function dataOraStrong(t) {
+  const n = normalizzaData(t, 'ora');
+  const m = n.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
   if (!m) return null;
   return `${m[1]}-${m[2]}-${m[3]} ${m[4].padStart(2, '0')}:${m[5]}:${m[6] || '00'}`;
 }
@@ -1457,7 +1697,7 @@ function analizzaStrong(testo) {
   vivi('Esercizi').forEach(e => String(e.nome_strong || '').split(';').map(n => n.trim().toLowerCase()).filter(Boolean)
     .forEach(n => { if (!perNomeStrong.has(n)) perNomeStrong.set(n, e.id); }));
   // Sessioni già presenti (anche eliminate): stessa ora di inizio e stesso titolo.
-  const giaPresenti = new Set([...D.Sessioni.values()].map(s => normalizzaData(s.inizio) + '|' + String(s.titolo).trim()));
+  const giaPresenti = new Set([...D.Sessioni.values()].map(s => dataOraStrong(s.inizio) + '|' + String(s.titolo).trim()));
 
   const sessioni = new Map(); // chiave -> { sess, esercizi: Map(nome -> {se, serie[]}) }
   const nuoviEsercizi = new Map();
@@ -1465,7 +1705,7 @@ function analizzaStrong(testo) {
   const giaViste = new Set();
   for (let i = 1; i < righe.length; i++) {
     const r = righe[i];
-    const inizio = normalizzaData(val(r, 'Date'));
+    const inizio = dataOraStrong(val(r, 'Date'));
     const titolo = val(r, 'Workout Name') || 'Allenamento';
     const nomeEs = val(r, 'Exercise Name');
     if (!inizio || !nomeEs) { saltate++; continue; }
@@ -1492,7 +1732,8 @@ function analizzaStrong(testo) {
     if (!esId) {
       let nuovo = nuoviEsercizi.get(nomeEs.toLowerCase());
       if (!nuovo) {
-        nuovo = nuovaRiga('Esercizi', { id: nuovoId('EX'), nome: nomeEs, nome_strong: nomeEs, tipo: 'peso_rip', area: 'altro', recupero_s: 0, origine: 'app', archiviato: NO });
+        // Recupero predefinito 90 s, così il timer parte anche per gli esercizi arrivati da Strong.
+        nuovo = nuovaRiga('Esercizi', { id: nuovoId('EX'), nome: nomeEs, nome_strong: nomeEs, tipo: 'peso_rip', area: 'altro', recupero_s: 90, origine: 'app', archiviato: NO });
         nuoviEsercizi.set(nomeEs.toLowerCase(), nuovo);
       }
       esId = nuovo.id;
@@ -1552,8 +1793,19 @@ function foglioRiepilogoImport(r) {
 
 /* ======================= Fogli dal basso ======================= */
 
-function apriFoglio(html) { $('#foglio').innerHTML = html; $('#velo').hidden = false; }
-function chiudiFoglio() { $('#velo').hidden = true; $('#foglio').innerHTML = ''; }
+function apriFoglio(html) {
+  $('#foglio').innerHTML = html;
+  if ($('#velo').hidden) {
+    $('#velo').hidden = false;
+    history.pushState(Object.assign(statoAttuale(), { foglio: true }), ''); // «indietro» chiuderà il foglio
+  }
+}
+function chiudiFoglio() {
+  if ($('#velo').hidden) return;
+  $('#velo').hidden = true; $('#foglio').innerHTML = '';
+  // Il passo del foglio diventa un passo normale (doppio), che «indietro» poi salta.
+  if (history.state && history.state.foglio) history.replaceState(statoAttuale(), '');
+}
 
 /* ----- Ordinare gli esercizi: tenendo premuto sul nome, le schede si compattano qui stesso ----- */
 // S.compatto = { scheda, padre } mentre il dito tiene premuto; quando si alza, le schede si riaprono.
@@ -1743,10 +1995,28 @@ function foglioSceltaEsercizio() {
     <button class="voce" data-azione="nuovo-es" style="color:var(--blu-chiaro)">${ic('plus')} Nuovo esercizio</button>
     <div id="lista-scelta">${righeScelta()}</div>`;
 }
+// Gli ultimi esercizi usati (dalle sessioni più recenti), senza doppioni.
+function eserciziRecenti(quanti = 8) {
+  const visti = [];
+  for (const s of vivi('Sessioni').sort((a, b) => String(b.inizio).localeCompare(String(a.inizio)))) {
+    for (const se of eserciziDi(s.id)) {
+      const e = riga('Esercizi', se.esercizio_id);
+      if (e && e.eliminato !== SI && e.archiviato !== SI && !visti.includes(e)) visti.push(e);
+      if (visti.length >= quanti) return visti;
+    }
+  }
+  return visti;
+}
 function righeScelta() {
+  const voce = e => `<button class="voce" data-azione="scegli-es" data-id="${esc(e.id)}"><span>${esc(e.nome)}<br><span class="tenue">${esc(TIPI_ES[e.tipo] || e.tipo)}${RIAB[e.area] ? ' · ' + esc(e.area) : ''}</span></span></button>`;
   const lista = elencoEsercizi(S.ricerca);
   if (!lista.length) return `<div class="vuoto-msg">Nessun esercizio trovato.</div>`;
-  return lista.map(e => `<button class="voce" data-azione="scegli-es" data-id="${esc(e.id)}"><span>${esc(e.nome)}<br><span class="tenue">${esc(TIPI_ES[e.tipo] || e.tipo)}${RIAB[e.area] ? ' · ' + esc(e.area) : ''}</span></span></button>`).join('');
+  // Senza ricerca: prima i recenti, poi tutti in ordine alfabetico.
+  if (!S.ricerca.trim()) {
+    const recenti = eserciziRecenti();
+    if (recenti.length) return `<div class="sotto-titolo">Recenti</div>${recenti.map(voce).join('')}<div class="sotto-titolo">Tutti</div>${lista.map(voce).join('')}`;
+  }
+  return lista.map(voce).join('');
 }
 
 function foglioNuovoEsercizio() {
@@ -1795,10 +2065,19 @@ async function aggiungiEsercizio(esercizioId) {
     const ms = nuovaRiga('ModelliSerie', { id: nuovoId('MS'), modello_esercizio_id: nuova.id, posizione: 1, tipo: 'normale', lato: 'entrambi' });
     await salva(['ModelliEsercizi', nuova], ['ModelliSerie', ms]);
   } else {
+    const sess = riga('Sessioni', S.sessioneId);
     const esistenti = eserciziDi(S.sessioneId);
     nuova = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: S.sessioneId, posizione: esistenti.length + 1, esercizio_id: esercizioId });
-    const s = nuovaRiga('Serie', { id: nuovoId('SR'), sessione_esercizio_id: nuova.id, posizione: 1, tipo: 'normale', lato: 'entrambi', fatta: NO });
-    await salva(['SessioniEsercizi', nuova], ['Serie', s]);
+    // Si ripropongono le serie dell'ultima volta (stesso numero, lati e valori, da spuntare);
+    // se l'esercizio non è mai stato fatto, una serie vuota.
+    const prima = serieUltimaVolta(sess, { id: nuova.id, esercizio_id: esercizioId });
+    const modelli = prima.length ? prima : [{ tipo: 'normale', lato: 'entrambi', peso_kg: '', rip: '', durata_s: '' }];
+    const daSalvare = [['SessioniEsercizi', nuova]];
+    modelli.forEach((p, i) => daSalvare.push(['Serie', nuovaRiga('Serie', {
+      id: nuovoId('SR'), sessione_esercizio_id: nuova.id, posizione: i + 1, tipo: p.tipo || 'normale', lato: p.lato || 'entrambi',
+      peso_kg: p.peso_kg ?? '', rip: p.rip ?? '', durata_s: p.durata_s ?? '', fatta: NO,
+    })]));
+    await salvaLista(daSalvare);
   }
   chiudiFoglio();
   disegna();
@@ -1808,6 +2087,70 @@ async function aggiungiEsercizio(esercizioId) {
 function avvisoSessioneGiaAperta() {
   apriFoglio(`<h2>C'è già una sessione in corso</h2><p class="tenue">Riprendila o terminala prima di iniziarne un'altra.</p>
     <button class="btn largo" data-azione="riprendi">Riprendi</button>`);
+}
+
+/* «Ripeti»: una sessione nuova, in corso, con gli stessi esercizi e serie (valori copiati, da spuntare). */
+async function ripetiSessione(origine) {
+  const sess = nuovaRiga('Sessioni', { id: nuovoId('SE'), titolo: origine.titolo, modello_id: origine.modello_id, inizio: ora(), fine: '' });
+  const daSalvare = [['Sessioni', sess]];
+  const voci = eserciziDi(origine.id);
+  const nuoviSS = {};
+  voci.forEach((se, i) => {
+    const ss = compagno(voci, se) ? (nuoviSS[se.superserie_id] = nuoviSS[se.superserie_id] || nuovoId('SS')) : '';
+    const nse = nuovaRiga('SessioniEsercizi', { id: nuovoId('SX'), sessione_id: sess.id, posizione: i + 1, esercizio_id: se.esercizio_id, superserie_id: ss });
+    daSalvare.push(['SessioniEsercizi', nse]);
+    serieDi(se.id).forEach((s, j) => daSalvare.push(['Serie', nuovaRiga('Serie', {
+      id: nuovoId('SR'), sessione_esercizio_id: nse.id, posizione: j + 1, tipo: s.tipo || 'normale', lato: s.lato || 'entrambi',
+      peso_kg: s.peso_kg, rip: s.rip, durata_s: s.durata_s, fatta: NO,
+    })]));
+  });
+  await salvaLista(daSalvare);
+  return sess;
+}
+/* «Salva come modello»: un modello nuovo con gli esercizi e le serie della sessione come serie previste. */
+async function modelloDaSessione(sess) {
+  const m = nuovaRiga('Modelli', { id: nuovoId('MOD'), nome: sess.titolo, cartella: '', ordine: vivi('Modelli').length + 1 });
+  const daSalvare = [['Modelli', m]];
+  const voci = eserciziDi(sess.id);
+  const nuoviSS = {};
+  voci.forEach((se, i) => {
+    const ss = compagno(voci, se) ? (nuoviSS[se.superserie_id] = nuoviSS[se.superserie_id] || nuovoId('SS')) : '';
+    const me = nuovaRiga('ModelliEsercizi', { id: nuovoId('ME'), modello_id: m.id, posizione: i + 1, esercizio_id: se.esercizio_id, superserie_id: ss, recupero_s: '' });
+    daSalvare.push(['ModelliEsercizi', me]);
+    serieDi(se.id).forEach((s, j) => daSalvare.push(['ModelliSerie', nuovaRiga('ModelliSerie', {
+      id: nuovoId('MS'), modello_esercizio_id: me.id, posizione: j + 1, tipo: s.tipo || 'normale', lato: s.lato || 'entrambi',
+      peso_kg: s.peso_kg, rip: s.rip, durata_s: s.durata_s, rpe_previsto: '',
+    })]));
+  });
+  await salvaLista(daSalvare);
+  return m;
+}
+
+async function chiudiSessione(fine) {
+  const sess = riga('Sessioni', S.sessioneId);
+  sess.fine = fine;
+  await salva(['Sessioni', sess]);
+  chiudiFoglio(); fermaTimer(); tieniAcceso(false);
+  S.aperti.clear();
+  mostraAvviso('Sessione salvata');
+  vai('oggi');
+  sincronizza();
+}
+
+/* Spunta di una serie vuota: si riempie con i valori dell'ultima volta (stesso lato e posto)
+ * oppure, se non ci sono, con quelli della serie prima. Restituisce true se ha riempito qualcosa. */
+function riempiSeVuota(s) {
+  const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
+  const tipo = tipoDi(riga('Esercizi', se.esercizio_id));
+  const campi = COLONNE_TIPO[tipo].map(([c]) => c === 'durata_min' ? 'durata_s' : c);
+  if (campi.some(c => s[c] !== '' && s[c] != null)) return false;
+  const lista = serieDi(se.id);
+  const prec = precedenteDi(lista, s, serieUltimaVolta(riga('Sessioni', se.sessione_id), se));
+  const primaDiQuesta = lista.slice(0, lista.indexOf(s)).reverse().find(x => campi.some(c => x[c] !== '' && x[c] != null));
+  const fonte = prec || primaDiQuesta;
+  if (!fonte) return false;
+  campi.forEach(c => { s[c] = fonte[c] ?? ''; });
+  return true;
 }
 
 async function eliminaRiga(scheda, id) {
@@ -1858,36 +2201,66 @@ const AZIONI = {
   'apri-sessione': el => vai('sessione', { sessioneId: el.dataset.id }),
   'chiudi-sessione': () => vai('storico'),
   'storico-tutte': () => { S.storicoTutte = true; disegna(); },
+  // Titolo e orari della sessione (per correggere una sessione dimenticata aperta, o finita alla mezzanotte).
   'rinomina-sessione': () => {
     const sess = riga('Sessioni', S.sessioneId);
-    apriFoglio(`<h2>Titolo della sessione</h2><input class="testo" id="titolo-sess" value="${esc(sess.titolo)}" style="margin-bottom:10px">
+    const locale = t => normalizzaData(t).slice(0, 16).replace(' ', 'T');
+    apriFoglio(`<h2>Sessione</h2>
+      <div class="campo-modulo"><label for="titolo-sess">Titolo</label><input class="testo" id="titolo-sess" value="${esc(sess.titolo)}"></div>
+      <div class="campo-modulo"><label for="inizio-sess">Inizio</label><input class="testo" id="inizio-sess" type="datetime-local" value="${esc(locale(sess.inizio))}"></div>
+      ${sess.fine ? `<div class="campo-modulo"><label for="fine-sess">Fine</label><input class="testo" id="fine-sess" type="datetime-local" value="${esc(locale(sess.fine))}"></div>` : ''}
+      <p class="errore" id="sess-errore" style="font-size:13px;margin:0 0 8px"></p>
       <button class="btn largo" data-azione="salva-titolo">Salva</button>`);
   },
   'salva-titolo': async () => {
     const sess = riga('Sessioni', S.sessioneId);
     const t = $('#titolo-sess').value.trim();
-    if (t) { sess.titolo = t; await salva(['Sessioni', sess]); }
+    const daCampo = id => { const v = $(id) && $(id).value; return v ? v.replace('T', ' ') + ':00' : ''; };
+    const inizio = daCampo('#inizio-sess'), fine = sess.fine ? daCampo('#fine-sess') : '';
+    const errore = m => { $('#sess-errore').textContent = m; };
+    if (!t) return errore('Scrivi un titolo.');
+    if (!inizio) return errore("Scegli l'ora di inizio.");
+    if (sess.fine && !fine) return errore("Scegli l'ora di fine.");
+    if (fine && fine <= inizio) return errore("La fine deve venire dopo l'inizio.");
+    if (inizio > ora()) return errore("L'inizio è nel futuro.");
+    sess.titolo = t;
+    if (inizio.slice(0, 16) !== normalizzaData(sess.inizio).slice(0, 16)) sess.inizio = inizio;
+    if (fine && fine.slice(0, 16) !== normalizzaData(sess.fine).slice(0, 16)) sess.fine = fine;
+    await salva(['Sessioni', sess]);
     chiudiFoglio(); disegna();
   },
   'fine-sessione': () => {
     const sess = riga('Sessioni', S.sessioneId);
     const r = riepilogoSessione(sess);
     const nonFatte = r.totali - r.fatte;
+    // Promemoria (solo un elenco, nessun giudizio): esercizi di ginocchio o caviglia senza valori di riabilitazione.
+    const senzaRiab = eserciziDi(sess.id).filter(se => {
+      const es = riga('Esercizi', se.esercizio_id);
+      return es && RIAB[es.area] && RIAB[es.area].campi.every(([c]) => se[c] === '' || se[c] == null);
+    });
+    const ultima = r.durata > 4 * 3600 ? oraUltimaSerie(sess) : '';
     apriFoglio(`<h2>Fine della sessione</h2>
       <div class="riepilogo" style="margin:14px 0"><div><b>${fmtMinuti(r.durata)}</b><span class="tenue">durata</span></div>
         <div><b>${r.fatte}</b><span class="tenue">serie fatte</span></div><div><b>${r.volume ? fmtKg(r.volume) : '—'}</b><span class="tenue">volume</span></div></div>
       ${nonFatte ? `<p class="tenue">${nonFatte} ${nonFatte === 1 ? 'serie non spuntata resta registrata' : 'serie non spuntate restano registrate'} come non fatta.</p>` : ''}
+      ${senzaRiab.length ? `<div class="card avviso-card" style="margin-bottom:10px"><b>Riabilitazione da compilare</b>
+        <p class="tenue" style="margin:4px 0 8px">${senzaRiab.map(se => esc(nomeVoce('SessioniEsercizi', se))).join(', ')}</p>
+        <button class="btn2 largo" data-azione="vai-riab" data-id="${esc(senzaRiab[0].id)}">Compila adesso</button></div>` : ''}
+      ${ultima ? `<button class="btn2 largo" style="margin-bottom:8px" data-azione="fine-a" data-valore="${esc(ultima)}">Salva con fine alle ${esc(ultima.slice(11, 16))} (ultima serie)</button>` : ''}
       <div class="riga-btn"><button class="btn2" data-azione="chiudi-foglio">Continua</button><button class="btn verde" data-azione="conferma-fine">Salva</button></div>`);
   },
-  'conferma-fine': async () => {
-    const sess = riga('Sessioni', S.sessioneId);
-    sess.fine = ora();
-    await salva(['Sessioni', sess]);
-    chiudiFoglio(); fermaTimer(); tieniAcceso(false);
-    mostraAvviso('Sessione salvata');
-    vai('oggi');
-    sincronizza();
+  'vai-riab': el => {
+    chiudiFoglio();
+    S.aperti.add(el.dataset.id); disegna();
+    const card = document.querySelector(`[data-se="${CSS.escape(el.dataset.id)}"]`);
+    if (card) {
+      const det = card.querySelector('details.riab'); if (det) det.open = true;
+      card.scrollIntoView({ block: 'center' });
+      const campo = card.querySelector('details.riab input'); if (campo) campo.focus();
+    }
   },
+  'conferma-fine': el => chiudiSessione(ora()),
+  'fine-a': el => chiudiSessione(el.dataset.valore),
   'elimina-sessione': () => {
     const aperta = sessioneAperta(riga('Sessioni', S.sessioneId));
     apriFoglio(`<h2>${aperta ? 'Annullare la sessione?' : 'Eliminare la sessione?'}</h2>
@@ -1909,16 +2282,40 @@ const AZIONI = {
   'spunta': async el => {
     const s = riga('Serie', el.dataset.id);
     s.fatta = s.fatta === SI ? NO : SI;
+    const riempita = s.fatta === SI && riempiSeVuota(s);
     await salva(['Serie', s]);
-    const r = document.querySelector(`.serie[data-id="${CSS.escape(s.id)}"]`);
-    if (r) r.classList.toggle('fatta', s.fatta === SI);
+    const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
+    const es = se && riga('Esercizi', se.esercizio_id);
     if (s.fatta === SI) {
       if (navigator.vibrate) navigator.vibrate(30);
       timerDopoSerie(s);
     }
-    const se = riga('SessioniEsercizi', s.sessione_esercizio_id);
-    const es = se && riga('Esercizi', se.esercizio_id);
-    if (es && (es.tipo === 'durata' || es.tipo === 'peso_durata')) disegna(); // aggiorna «Avvia serie»
+    const sess = riga('Sessioni', se.sessione_id);
+    const tutteFatte = serieDi(se.id).every(x => x.fatta === SI);
+    if (s.fatta === SI && tutteFatte && sessioneAperta(sess)) {
+      // Esercizio finito: si compatta e la pagina porta al prossimo esercizio da fare.
+      S.aperti.delete(se.id);
+      disegna();
+      const prossimo = eserciziDi(sess.id).find(x => serieDi(x.id).some(y => y.fatta !== SI));
+      const card = prossimo && document.querySelector(`[data-se="${CSS.escape(prossimo.id)}"]`);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (riempita || (es && (es.tipo === 'durata' || es.tipo === 'peso_durata'))) { disegna(); return; } // valori nuovi o «Avvia serie»
+    const r = document.querySelector(`.serie[data-id="${CSS.escape(s.id)}"]`);
+    if (r) r.classList.toggle('fatta', s.fatta === SI);
+  },
+  'espandi-es': el => { S.aperti.add(el.dataset.id); disegna(); },
+  'ripeti-sessione': async () => {
+    if (sessioneInCorso()) return avvisoSessioneGiaAperta();
+    const nuova = await ripetiSessione(riga('Sessioni', S.sessioneId));
+    vai('sessione', { sessioneId: nuova.id }); controllaWakeLock();
+    mostraAvviso('Sessione ripetuta: le serie sono da spuntare');
+  },
+  'salva-come-modello': async () => {
+    const m = await modelloDaSessione(riga('Sessioni', S.sessioneId));
+    vai('modello', { modelloId: m.id });
+    mostraAvviso('Modello creato: controlla nome e cartella');
   },
   'usa-precedente': async el => {
     const s = riga('Serie', el.dataset.id);
@@ -2063,6 +2460,21 @@ const AZIONI = {
   },
   'giorno-storico': el => { S.giornoStorico = S.giornoStorico === el.dataset.valore ? null : el.dataset.valore; disegna(); },
   'mostra-archiviati': () => { S.mostraArchiviati = !S.mostraArchiviati; disegna(); },
+  'da-completare': () => { S.daCompletare = !S.daCompletare; disegna(); },
+  'vai-da-completare': () => vai('esercizi', { vistaArchivio: 'esercizi', daCompletare: true }),
+  'recupero-90': () => {
+    const senza = vivi('Esercizi').filter(e => e.archiviato !== SI && !(num(e.recupero_s) > 0));
+    apriFoglio(`<h2>Recupero di 90 secondi</h2>
+      <p class="tenue">Lo imposto a ${senza.length} ${senza.length === 1 ? 'esercizio che non ha' : 'esercizi che non hanno'} un recupero. Potrai sempre cambiarlo esercizio per esercizio.</p>
+      <div class="riga-btn"><button class="btn2" data-azione="chiudi-foglio">Annulla</button><button class="btn" data-azione="conferma-recupero-90">Imposta</button></div>`);
+  },
+  'conferma-recupero-90': async () => {
+    const senza = vivi('Esercizi').filter(e => e.archiviato !== SI && !(num(e.recupero_s) > 0));
+    senza.forEach(e => { e.recupero_s = 90; });
+    await salvaLista(senza.map(e => ['Esercizi', e]));
+    chiudiFoglio(); disegna();
+    mostraAvviso(`Recupero impostato a ${senza.length} esercizi`);
+  },
   'nuovo-esercizio': () => vai('esercizio', { bozzaEs: { id: '', nome: S.ricercaArchivio, tipo: 'peso_rip', area: 'altro', attrezzo: '', gruppo: '', recupero_s: '90', nota: '', nome_strong: '', archiviato: NO } }),
   'apri-esercizio': el => {
     const e = riga('Esercizi', el.dataset.id);
@@ -2171,6 +2583,8 @@ const AZIONI = {
   'timer-meno': () => cambiaTimer(-15),
   'timer-piu': () => cambiaTimer(15),
   'timer-stop': () => fermaTimer(),
+  'timer-salva': () => salvaRecupero(),
+  'rpe': async el => { await salvaMeta('nascondiRpe', el.dataset.valore === 'nascondi'); disegna(); },
   'imp-salva': async () => {
     const url = $('#imp-url').value.trim();
     const token = $('#imp-token').value;
@@ -2213,8 +2627,8 @@ const AZIONI = {
     const bottone = $('[data-azione="conferma-import"]');
     if (bottone) { bottone.disabled = true; bottone.textContent = 'Importo…'; }
     // Si ricontrolla subito prima di scrivere, nel caso il foglio sia cambiato nel frattempo.
-    const giaPresenti = new Set([...D.Sessioni.values()].map(s => normalizzaData(s.inizio) + '|' + String(s.titolo).trim()));
-    const doppie = imp.daSalvare.some(([sc, r]) => sc === 'Sessioni' && giaPresenti.has(normalizzaData(r.inizio) + '|' + String(r.titolo).trim()));
+    const giaPresenti = new Set([...D.Sessioni.values()].map(s => dataOraStrong(s.inizio) + '|' + String(s.titolo).trim()));
+    const doppie = imp.daSalvare.some(([sc, r]) => sc === 'Sessioni' && giaPresenti.has(dataOraStrong(r.inizio) + '|' + String(r.titolo).trim()));
     if (doppie) { $('#imp-errore').textContent = 'Alcune sessioni risultano già importate: riapri il file.'; return; }
     await salvaLista(imp.daSalvare);
     S.importazione = null;
@@ -2299,6 +2713,27 @@ document.addEventListener('click', async e => {
   catch (err) { mostraAvviso('Qualcosa non va: ' + err.message); }
 });
 
+/* Comodità della tastiera:
+ * - toccando un numero viene selezionato, così si riscrive senza cancellare;
+ * - il tasto «Avanti» della tastiera porta al numero successivo (kg → rip → riga dopo);
+ * - mentre si scrive, la barra in basso sparisce per lasciare spazio. */
+document.addEventListener('focusin', e => {
+  const el = e.target;
+  if (el.matches('input, textarea')) document.body.classList.add('scrivendo');
+  if (el.matches('input.num')) setTimeout(() => { try { el.select(); } catch (err) { /* alcuni campi non lo permettono */ } }, 0);
+});
+document.addEventListener('focusout', () => {
+  setTimeout(() => { if (!document.activeElement || !document.activeElement.matches('input, textarea')) document.body.classList.remove('scrivendo'); }, 100);
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target.matches('input.num')) return;
+  e.preventDefault();
+  const campi = [...document.querySelectorAll('#schermo input.num, #foglio input.num')].filter(x => x.offsetParent);
+  const prossimo = campi[campi.indexOf(e.target) + 1];
+  if (prossimo) { prossimo.focus(); prossimo.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  else e.target.blur();
+});
+
 /* Scrittura nei campi: si salva a ogni modifica, senza ridisegnare (il cursore resta dov'è). */
 const LIMITI = { rpe: [0, 10], rpe_previsto: [0, 10], peso_kg: [0, 1000], rip: [0, 1000], durata_s: [0, 86400], durata_min: [0, 1440] };
 function segnaValido(el, valido) { el.style.outline = valido ? '' : '2px solid var(--rosso)'; return valido; }
@@ -2381,9 +2816,9 @@ async function avvio() {
     return;
   }
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
-  history.replaceState({ schermata: 'oggi' }, '');
+  history.replaceState(statoAttuale(), '');
   const inCorso = sessioneInCorso();
-  if (inCorso) { S.schermata = 'sessione'; S.sessioneId = inCorso.id; history.pushState({ schermata: 'sessione', sessioneId: inCorso.id }, ''); }
+  if (inCorso) { S.schermata = 'sessione'; S.sessioneId = inCorso.id; history.pushState(statoAttuale(), ''); }
   disegna();
   controllaWakeLock();
   aggiornaTimer();
