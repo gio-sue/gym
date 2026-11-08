@@ -73,6 +73,9 @@ const ICONE = {
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   unlink: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7"/><path d="M4 4l16 16"/>',
   upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
+  grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
+  swap: '<path d="M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4"/>',
+  list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 function ic(nome) { return `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICONE[nome] || ''}</svg>`; }
 
@@ -636,6 +639,7 @@ let daRidisegnare = false;
 function ridisegnaSePossibile() {
   const att = document.activeElement;
   if (att && att.matches('input, textarea') && $('#schermo').contains(att)) { daRidisegnare = true; return; }
+  if (S.compatto) { daRidisegnare = true; return; } // si sta ordinando: si ridisegna quando il dito si alza
   if (S.schermata === 'esercizio') { daRidisegnare = true; return; } // modulo non ancora salvato
   disegna();
 }
@@ -726,7 +730,7 @@ function disegnaEsercizioSessione(sess, se, lettera) {
   const precedenti = serieUltimaVolta(sess, se);
   let html = `<div class="card" style="padding:12px 8px" data-se="${esc(se.id)}">
     <div class="fila" style="padding:0 4px 8px;align-items:flex-start"><div>
-      <div class="es-titolo">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}</div>
+      <div class="es-titolo" data-tieni="SessioniEsercizi" data-id="${esc(se.id)}">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + se.esercizio_id + ')')}</div>
       ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}
       <span class="tenue">${rec ? 'recupero ' + fmtDurata(rec) : 'senza recupero'}</span>
       ${me && me.nota ? `<p class="indicazione">${esc(me.nota)}</p>` : ''}
@@ -775,7 +779,7 @@ function disegnaSessione() {
     ${aperta ? `<button class="btn verde" data-azione="fine-sessione">Fine</button>` : `<button class="btn2" data-azione="chiudi-sessione">Chiudi</button>`}
   </div><div class="pila">`;
   const esercizi = eserciziDi(sess.id);
-  html += disegnaBlocchi(esercizi, (se, lettera) => disegnaEsercizioSessione(sess, se, lettera));
+  html += `<div class="blocchi pila">${disegnaBlocchi(esercizi, (se, lettera) => disegnaEsercizioSessione(sess, se, lettera))}</div>`;
   if (!esercizi.length) html += `<div class="vuoto-msg">Nessun esercizio. Aggiungine uno.</div>`;
   html += `<button class="btn2 largo" data-azione="aggiungi-es" data-per="sessione">${ic('plus')} Esercizio</button>
     <textarea class="testo" placeholder="Nota sulla sessione" data-sess-campo="nota">${esc(sess.nota)}</textarea>
@@ -914,7 +918,7 @@ function disegnaVoceModello(me, lettera) {
   const recEs = es ? num(es.recupero_s) : NaN;
   let html = `<div class="card" style="padding:12px 8px">
     <div class="fila" style="padding:0 4px 8px;align-items:flex-start"><div>
-      <div class="es-titolo">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + me.esercizio_id + ')')}</div>
+      <div class="es-titolo" data-tieni="ModelliEsercizi" data-id="${esc(me.id)}">${lettera ? lettera + ' · ' : ''}${esc(es ? es.nome : 'Esercizio non trovato (' + me.esercizio_id + ')')}</div>
       ${es && RIAB[es.area] ? `<span class="tag">${esc(es.area)}</span>` : ''}<span class="tenue">${esc(TIPI_ES[tipo])}</span>
     </div><button class="icona" data-azione="menu-es" data-scheda="ModelliEsercizi" data-id="${esc(me.id)}" aria-label="Opzioni esercizio">${ic('dots')}</button></div>
     <div class="riab-riga" style="grid-template-columns:84px minmax(0,1fr);padding:0 4px"><span class="tenue">Recupero (s)</span>
@@ -939,7 +943,7 @@ function disegnaModello() {
       <div class="campo-modulo" style="margin:0"><label for="m-nota">Nota</label><textarea class="testo" id="m-nota" data-mod-campo="nota">${esc(m.nota)}</textarea></div>
       ${datalist('l-cartelle', vivi('Modelli').map(x => x.cartella))}
     </div>`;
-  html += disegnaBlocchi(voci, disegnaVoceModello);
+  html += `<div class="blocchi pila">${disegnaBlocchi(voci, disegnaVoceModello)}</div>`;
   if (!voci.length) html += `<div class="vuoto-msg">Nessun esercizio nel modello.</div>`;
   html += `<button class="btn2 largo" data-azione="aggiungi-es" data-per="modello">${ic('plus')} Esercizio</button>
     <button class="btn largo" data-azione="avvia-modello" data-id="${esc(m.id)}">${ic('play')} Inizia una sessione</button></div>`;
@@ -1132,6 +1136,115 @@ function foglioRiepilogoImport(r) {
 
 function apriFoglio(html) { $('#foglio').innerHTML = html; $('#velo').hidden = false; }
 function chiudiFoglio() { $('#velo').hidden = true; $('#foglio').innerHTML = ''; }
+
+/* ----- Ordinare gli esercizi: tenendo premuto sul nome, le schede si compattano qui stesso ----- */
+// S.compatto = { scheda, padre } mentre il dito tiene premuto; quando si alza, le schede si riaprono.
+function vociCompatte() {
+  const { scheda, padre } = S.compatto;
+  return `<div id="ordina-lista">${blocchi(figli(scheda, padre)).map(b => {
+    const nomi = b.map((x, i) => `${b.length > 1 ? (i ? 'B' : 'A') + ' · ' : ''}${esc(nomeVoce(scheda, x))}`).join('<br>');
+    return `<div class="ord-voce ${b.length > 1 ? 'ord-coppia' : ''}" data-ids="${b.map(x => esc(x.id)).join(',')}">
+      <span class="ord-maniglia">${ic('grip')}</span><span style="flex:1">${nomi}</span></div>`;
+  }).join('')}</div>`;
+}
+async function salvaOrdine() {
+  const { scheda } = S.compatto;
+  const ids = [...$('#ordina-lista').children].flatMap(el => el.dataset.ids.split(','));
+  const cambiate = [];
+  ids.forEach((id, k) => {
+    const r = riga(scheda, id);
+    if (num(r.posizione) !== k + 1) { r.posizione = k + 1; cambiate.push([scheda, r]); }
+  });
+  if (cambiate.length) await salvaLista(cambiate);
+}
+async function invertiCoppia(scheda, id) {
+  const a = riga(scheda, id);
+  const b = compagno(fratelliDi(scheda, a), a);
+  if (!b) return;
+  [a.posizione, b.posizione] = [b.posizione, a.posizione];
+  await salva([scheda, a], [scheda, b]);
+}
+
+// Trascinamento nell'elenco: la voce presa resta ferma nel documento, si spostano le altre attorno.
+let presa = null;
+const metaAltezza = x => { const b = x.getBoundingClientRect(); return b.top + b.height / 2; };
+// «scarto» tiene conto della distanza tra il dito e la voce (il dito può essere ancora sul nome nella pagina).
+function prendi(el, pid, y) {
+  presa = { el, pid, mosso: false, scarto: metaAltezza(el) - y, ultimaY: y };
+  el.classList.add('presa');
+}
+document.addEventListener('pointermove', e => {
+  if (!presa || e.pointerId !== presa.pid) return;
+  const { el } = presa, lista = el.parentNode;
+  const y = e.clientY + presa.scarto;
+  let cambiato = true;
+  while (cambiato) {
+    cambiato = false;
+    const prima = el.previousElementSibling, dopo = el.nextElementSibling;
+    if (prima && y < metaAltezza(prima)) { lista.insertBefore(prima, el.nextSibling); cambiato = presa.mosso = true; }
+    else if (dopo && y > metaAltezza(dopo)) { lista.insertBefore(dopo, el); cambiato = presa.mosso = true; }
+  }
+});
+// Quando il dito si alza: si salva il nuovo ordine e le schede si riaprono.
+async function lasciaPresa() {
+  if (!presa) return;
+  const { el, mosso } = presa;
+  presa = null;
+  el.classList.remove('presa');
+  if (!S.compatto) return;
+  const primo = el.dataset.ids.split(',')[0];
+  if (mosso) await salvaOrdine();
+  S.compatto = null;
+  $('#schermo').classList.remove('in-ordine');
+  disegna();
+  // Si torna alla scheda dell'esercizio appena spostato.
+  const titolo = document.querySelector(`[data-tieni][data-id="${CSS.escape(primo)}"]`);
+  if (titolo) titolo.scrollIntoView({ block: 'center' });
+}
+document.addEventListener('pointerup', lasciaPresa);
+document.addEventListener('pointercancel', lasciaPresa);
+// Mentre si trascina, la pagina non deve scorrere sotto il dito.
+document.addEventListener('touchmove', e => { if (presa || (pressione && pressione.scattata)) e.preventDefault(); }, { passive: false });
+
+// Pressione lunga sul nome di un esercizio: tutte le schede si compattano e si trascina subito.
+let pressione = null;
+document.addEventListener('pointerdown', e => {
+  const t = e.target.closest('[data-tieni]');
+  if (!t || e.button > 0) return;
+  pressione = {
+    x: e.clientX, y: e.clientY, scattata: false,
+    timer: setTimeout(() => {
+      pressione.scattata = true;
+      if (navigator.vibrate) navigator.vibrate(30);
+      const scheda = t.dataset.tieni, id = t.dataset.id;
+      const blocchiEl = $('#schermo .blocchi');
+      if (!blocchiEl) return;
+      S.compatto = { scheda, padre: riga(scheda, id)[PADRE[scheda]] };
+      // Le schede vengono solo nascoste (non tolte): il nome premuto resta nella pagina finché il dito è giù,
+      // altrimenti il telefono perderebbe il tocco e farebbe scorrere la pagina.
+      blocchiEl.insertAdjacentHTML('beforebegin', vociCompatte());
+      $('#schermo').classList.add('in-ordine');
+      // La riga dell'esercizio premuto viene messa sotto il dito, che la trascina senza alzarsi.
+      const voce = [...document.querySelectorAll('.ord-voce')].find(v => v.dataset.ids.split(',').includes(id));
+      window.scrollBy(0, metaAltezza(voce) - pressione.y);
+      prendi(voce, e.pointerId, pressione.y);
+    }, 450),
+  };
+});
+document.addEventListener('pointermove', e => {
+  if (pressione && !pressione.scattata && Math.hypot(e.clientX - pressione.x, e.clientY - pressione.y) > 10) {
+    clearTimeout(pressione.timer); pressione = null;
+  }
+});
+function finePressione() {
+  if (!pressione) return;
+  clearTimeout(pressione.timer);
+  if (pressione.scattata) ultimoTrascinamento = Date.now(); // il dito che si alza non deve toccare altro
+  pressione = null;
+}
+document.addEventListener('pointerup', finePressione);
+document.addEventListener('pointercancel', finePressione);
+document.addEventListener('contextmenu', e => { if (e.target.closest('[data-tieni]')) e.preventDefault(); });
 $('#velo').addEventListener('click', e => { if (e.target.id === 'velo' && !conto) chiudiFoglio(); });
 
 let avvisoTimeout = null, avvisoAzione = null;
@@ -1400,23 +1513,14 @@ const AZIONI = {
     const comp = compagno(fratelliDi(scheda, r), r);
     const attr = `data-scheda="${scheda}" data-id="${esc(r.id)}"`;
     apriFoglio(`<h2>${esc(nomeVoce(scheda, r))}</h2>
-      <button class="voce" data-azione="sposta-es" ${attr} data-valore="-1">${ic('arrow-up')} Sposta su</button>
-      <button class="voce" data-azione="sposta-es" ${attr} data-valore="1">${ic('arrow-down')} Sposta giù</button>
-      ${comp ? `<button class="voce" data-azione="scollega" ${attr}>${ic('unlink')} Scollega la superserie</button>`
+      ${comp ? `<button class="voce" data-azione="inverti-coppia" ${attr}>${ic('swap')} Inverti A e B</button>
+        <button class="voce" data-azione="scollega" ${attr}>${ic('unlink')} Scollega la superserie</button>`
         : `<button class="voce" data-azione="collega-scegli" ${attr}>${ic('link')} Collega in superserie</button>`}
+      <p class="tenue">Per spostare gli esercizi: tieni premuto sul nome e trascina.</p>
       <button class="voce" data-azione="rimuovi-es" ${attr} style="color:var(--rosso)">${ic('trash')} Rimuovi</button>`);
   },
-  'sposta-es': async el => {
-    const scheda = el.dataset.scheda;
-    const r = riga(scheda, el.dataset.id);
-    const bl = blocchi(fratelliDi(scheda, r));
-    const i = bl.findIndex(b => b.includes(r)), j = i + Number(el.dataset.valore);
-    if (j >= 0 && j < bl.length) {
-      [bl[i], bl[j]] = [bl[j], bl[i]];
-      const cambiate = [];
-      bl.flat().forEach((x, k) => { if (num(x.posizione) !== k + 1) { x.posizione = k + 1; cambiate.push([scheda, x]); } });
-      await salvaLista(cambiate);
-    }
+  'inverti-coppia': async el => {
+    await invertiCoppia(el.dataset.scheda, el.dataset.id);
     chiudiFoglio(); disegna();
   },
   'collega-scegli': el => {
