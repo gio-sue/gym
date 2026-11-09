@@ -12,7 +12,7 @@
 
 const SI = 'sì', NO = 'no';
 // Numero di versione mostrato nelle Impostazioni: va cambiato insieme a VERSIONE in sw.js.
-const VERSIONE_APP = 14;
+const VERSIONE_APP = 17;
 
 // Le colonne di ogni scheda del foglio: sono il «contratto», non vanno cambiate.
 const COLONNE = {
@@ -22,14 +22,25 @@ const COLONNE = {
   Modelli: ['id', 'nome', 'cartella', 'ordine', 'nota', 'aggiornato_il', 'eliminato', 'sedute_settimana'],
   ModelliEsercizi: ['id', 'modello_id', 'posizione', 'esercizio_id', 'superserie_id', 'recupero_s', 'nota', 'aggiornato_il', 'eliminato'],
   ModelliSerie: ['id', 'modello_esercizio_id', 'posizione', 'tipo', 'lato', 'peso_kg', 'rip', 'durata_s', 'rpe_previsto', 'aggiornato_il', 'eliminato'],
-  Sessioni: ['id', 'titolo', 'modello_id', 'inizio', 'fine', 'nota', 'aggiornato_il', 'eliminato'],
+  // pausa_s e pausa_dal (aggiunte l'08/11/2026, in fondo a destra): secondi totali di pausa e inizio della pausa in corso.
+  Sessioni: ['id', 'titolo', 'modello_id', 'inizio', 'fine', 'nota', 'aggiornato_il', 'eliminato', 'pausa_s', 'pausa_dal'],
   SessioniEsercizi: ['id', 'sessione_id', 'posizione', 'esercizio_id', 'superserie_id', 'nota',
     'ginocchio_pienezza', 'ginocchio_pienezza_nota', 'ginocchio_dolore', 'ginocchio_dolore_nota',
     'malleolo_dolore', 'malleolo_dolore_nota', 'achille_dolore', 'achille_dolore_nota', 'aggiornato_il', 'eliminato'],
   Serie: ['id', 'sessione_esercizio_id', 'posizione', 'tipo', 'lato', 'peso_kg', 'rip', 'durata_s', 'rpe', 'fatta', 'aggiornato_il', 'eliminato'],
   Test: ['id', 'data', 'tipo', 'lato', 'valore', 'unita', 'dolore', 'nota', 'aggiornato_il', 'eliminato', 'origine'],
+  // Diario (09/11/2026). DiarioCampi e Farmaci l'app li legge soltanto (li scrivono Giosuè o Claude in chat).
+  DiarioCampi: ['id', 'sezione', 'etichetta', 'tipo', 'ha_nota', 'ordine', 'attivo', 'scala_min', 'scala_max', 'opzioni', 'aiuto', 'aggiornato_il', 'eliminato'],
+  Farmaci: ['id', 'nome', 'tipo', 'dose_testo', 'previste_al_giorno', 'dal', 'al', 'nota', 'aggiornato_il', 'eliminato'],
+  DiarioValori: ['id', 'giorno', 'campo_id', 'campo_etichetta', 'valore', 'nota', 'aggiornato_il', 'eliminato'],
+  DiarioFarmaci: ['id', 'giorno', 'farmaco_id', 'farmaco_nome', 'previste', 'prese', 'nota', 'aggiornato_il', 'eliminato'],
 };
 const SCHEDE = Object.keys(COLONNE);
+// Le schede del Diario si chiedono a parte, e solo al ponte versione 4 o successiva:
+// un ponte più vecchio rifiuterebbe tutta la richiesta e bloccherebbe la sincronizzazione.
+const SCHEDE_DIARIO = ['DiarioCampi', 'Farmaci', 'DiarioValori', 'DiarioFarmaci'];
+const SCHEDE_BASE = SCHEDE.filter(s => !SCHEDE_DIARIO.includes(s));
+const PONTE_DIARIO = 4;
 
 // Per ogni scheda «figlia», la colonna che indica la riga «madre».
 const PADRE = { Serie: 'sessione_esercizio_id', SessioniEsercizi: 'sessione_id', ModelliSerie: 'modello_esercizio_id', ModelliEsercizi: 'modello_id' };
@@ -84,6 +95,8 @@ const ICONE = {
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
   unlink: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7"/><path d="M4 4l16 16"/>',
   upload: '<path d="M12 16V4M6 10l6-6 6 6M4 20h16"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>',
+  notebook: '<path d="M6 3h11a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6z"/><path d="M9 3v18M12 8h4M12 12h4"/>',
   grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
   swap: '<path d="M8 4v16M4 8l4-4 4 4M16 20V4M12 16l4 4 4-4"/>',
 };
@@ -115,7 +128,7 @@ function normalizzaData(testo, genere = 'ora') {
   const g = `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   return genere === 'giorno' ? g : `${g} ${(m[4] || '0').padStart(2, '0')}:${m[5] || '00'}:${m[6] || '00'}`;
 }
-const COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', data: 'giorno' };
+const COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', pausa_dal: 'ora', data: 'giorno', giorno: 'giorno', dal: 'giorno', al: 'giorno' };
 function dataDa(testo) {
   const t = normalizzaData(testo);
   if (!t) return null;
@@ -374,13 +387,21 @@ async function sincronizza({ completo = false } = {}) {
     const tutto = completo || mancaQualcosa || !meta.cursore || meta.ultimoCompleto !== oggi;
     let dal = '';
     if (!tutto) dal = ora(new Date(dataDa(meta.cursore).getTime() - 3600 * 1000)); // un'ora di margine
-    const dati = await chiamaPonte({ azione: 'pull', dal, schede: [...SCHEDE, 'Impostazioni'] });
+    const dati = await chiamaPonte({ azione: 'pull', dal, schede: [...SCHEDE_BASE, 'Impostazioni'] });
     // Impostazioni del foglio: si legge solo la versione dello schema (per accorgersi se un giorno cambia).
     const imp = ((dati.schede || {}).Impostazioni || {}).righe || [];
     const vs = imp.find(r => r.chiave === 'versione_schema');
     if (vs) await salvaMeta('versioneSchema', String(vs.valore).trim());
     await salvaMeta('versionePonte', dati.versione_ponte || 1);
-    const { cambiate, daRiinviare } = await unisci(dati.schede || {});
+    let { cambiate, daRiinviare } = await unisci(dati.schede || {});
+    // Diario: seconda lettura, solo se il ponte lo conosce (versione 4 o successiva).
+    if ((dati.versione_ponte || 1) >= PONTE_DIARIO) {
+      const datiDiario = await chiamaPonte({ azione: 'pull', dal: meta.diarioScaricato ? dal : '', schede: SCHEDE_DIARIO });
+      const esito = await unisci(datiDiario.schede || {});
+      cambiate += esito.cambiate;
+      daRiinviare = daRiinviare.concat(esito.daRiinviare);
+      await salvaMeta('diarioScaricato', ora());
+    }
     if (daRiinviare.length) await salvaLista(daRiinviare); // colonna appena aggiunta nel foglio: si mandano i valori del telefono
     await salvaMeta('cursore', dati.adesso);
     if (tutto) await salvaMeta('ultimoCompleto', oggi);
@@ -408,7 +429,9 @@ async function unisci(schede) {
   let cambiate = 0;
   const inAttesa = new Set((await tutti('coda')).map(e => e.k)); // modifiche locali non ancora inviate
   const mancantiPrima = meta.colonneMancanti || {};
-  const mancanti = {};
+  // Si aggiornano solo le schede lette in questa chiamata (il Diario si legge in una chiamata a parte).
+  const mancanti = Object.assign({}, mancantiPrima);
+  Object.keys(schede).forEach(s => { delete mancanti[s]; });
   Object.keys(schede).forEach(scheda => {
     if (!D[scheda]) return;
     const intest = schede[scheda].intestazioni || COLONNE[scheda];
@@ -629,11 +652,51 @@ async function tieniAcceso(si) {
     }
   } catch (e) { wakeLock = null; }
 }
-function controllaWakeLock() { tieniAcceso(!!sessioneInCorso()); }
+// Schermo acceso solo durante una sessione in corso e non in pausa.
+function controllaWakeLock() { const s = sessioneInCorso(); tieniAcceso(!!s && !inPausa(s)); }
 
 /* ======================= Domande sui dati ======================= */
 
 function sessioneAperta(sess) { return sess && sess.eliminato !== SI && !sess.fine; }
+
+/* ----- Pausa: pausa_dal = quando è iniziata la pausa in corso; pausa_s = secondi di pausa già finiti ----- */
+function inPausa(sess) { return !!(sess && sessioneAperta(sess) && sess.pausa_dal); }
+/** Durata vera della sessione in secondi, senza le pause (anche quella in corso). */
+function durataSessione(sess) {
+  const inizio = dataDa(sess.inizio);
+  if (!inizio) return 0;
+  const fine = sess.fine ? dataDa(sess.fine) : sess.pausa_dal ? dataDa(sess.pausa_dal) : new Date();
+  return Math.max(0, (fine - inizio) / 1000 - (num(sess.pausa_s) || 0));
+}
+async function mettiInPausa(sess) {
+  if (inPausa(sess)) return;
+  sess.pausa_dal = ora();
+  await salva(['Sessioni', sess]);
+  fermaTimer(); tieniAcceso(false);
+}
+async function riprendiSessione(sess) {
+  if (!inPausa(sess)) return;
+  const pausa = Math.max(0, Math.round((Date.now() - dataDa(sess.pausa_dal)) / 1000));
+  sess.pausa_s = (num(sess.pausa_s) || 0) + pausa;
+  sess.pausa_dal = '';
+  await salva(['Sessioni', sess]);
+  controllaWakeLock();
+}
+/** Ultimo segno di vita della sessione: l'ultima modifica a una serie o all'esercizio, o la ripresa da una pausa. */
+function ultimaAttivita(sess) {
+  let ultima = normalizzaData(sess.inizio);
+  const piuTardi = t => { t = String(t || ''); if (t > ultima) ultima = t; };
+  piuTardi(sess.aggiornato_il);
+  eserciziDi(sess.id).forEach(se => { piuTardi(se.aggiornato_il); serieDi(se.id).forEach(s => piuTardi(s.aggiornato_il)); });
+  return ultima;
+}
+/** Minuti senza attività di una sessione in corso (0 se in pausa o finita). */
+function minutiFermi(sess) {
+  if (!sessioneAperta(sess) || inPausa(sess)) return 0;
+  const d = dataDa(ultimaAttivita(sess));
+  return d ? (Date.now() - d) / 60000 : 0;
+}
+const MINUTI_AVVISO = 30; // dopo 30 minuti senza serie: «hai finito?»
 function sessioneInCorso() {
   return vivi('Sessioni').filter(s => !s.fine).sort((a, b) => String(b.inizio).localeCompare(String(a.inizio)))[0] || null;
 }
@@ -664,9 +727,7 @@ function riepilogoSessione(sess) {
       }
     });
   });
-  const inizio = dataDa(sess.inizio), fine = sess.fine ? dataDa(sess.fine) : new Date();
-  const durata = inizio && fine ? (fine - inizio) / 1000 : 0;
-  return { fatte, totali, volume, durata, nomi };
+  return { fatte, totali, volume, durata: durataSessione(sess), nomi };
 }
 
 /* ----- Superserie: due esercizi con lo stesso superserie_id (solo coppie) ----- */
@@ -728,8 +789,8 @@ const S = {
  * - tra le schede della barra in basso no: da Oggi a un'altra scheda c'è un solo passo, tra le altre si sostituisce;
  * - un foglio dal basso aggiunge un passo, così «indietro» chiude solo il foglio;
  * - i passi doppi (stessa schermata) vengono saltati. */
-const SCHEDE_BARRA = ['oggi', 'storico', 'esercizi', 'test'];
-const CHIAVI_STATO = ['schermata', 'sessioneId', 'modelloId', 'esercizioVisto', 'testTipo'];
+const SCHEDE_BARRA = ['oggi', 'storico', 'esercizi', 'test', 'diario'];
+const CHIAVI_STATO = ['schermata', 'sessioneId', 'modelloId', 'esercizioVisto', 'testTipo', 'giornoDiario'];
 function statoAttuale() { const st = {}; CHIAVI_STATO.forEach(k => { st[k] = S[k] || null; }); return st; }
 function stessoStato(a, b) { return !!a && !!b && CHIAVI_STATO.every(k => (a[k] || null) === (b[k] || null)); }
 
@@ -761,6 +822,7 @@ const SCHERMATE = {
   oggi: disegnaOggi, sessione: disegnaSessione, storico: disegnaStorico, esercizi: disegnaArchivio,
   esercizio: disegnaFormEsercizio, modello: disegnaModello, test: disegnaTest, impostazioni: disegnaImpostazioni,
   'test-nuovo': disegnaFormTest, 'test-andamento': disegnaAndamentoTest, 'esercizio-andamento': disegnaAndamentoEsercizio,
+  diario: disegnaDiario,
 };
 const TAB_DI = { esercizio: 'esercizi', modello: 'esercizi', 'test-nuovo': 'test', 'test-andamento': 'test', 'esercizio-andamento': 'esercizi' };
 const MODULI = ['esercizio', 'test-nuovo']; // schermate con un modulo non ancora salvato: non si ridisegnano da sole
@@ -818,10 +880,13 @@ function disegnaOggi() {
   const sessioni = vivi('Sessioni');
   let html = testata('Oggi', '', `<button class="icona" data-vai="impostazioni" aria-label="Impostazioni">${ic('settings')}</button>`) + `<div class="pila">`;
   if (inCorso) {
-    const ore = (Date.now() - (dataDa(inCorso.inizio) || new Date())) / 3600e3;
-    html += `<div class="card in-corso"><div class="tenue">Sessione in corso${ore > 4 ? ` · <span class="errore">aperta da ${fmtMinuti(ore * 3600)}</span>` : ''}</div>
-      <div style="font-size:17px;font-weight:500;margin:2px 0 8px">${esc(inCorso.titolo)} · iniziata alle ${fmtOraBreve(dataDa(inCorso.inizio))}</div>
-      <button class="btn largo" data-azione="riprendi">Riprendi</button></div>`;
+    const pausa = inPausa(inCorso);
+    const fermi = minutiFermi(inCorso);
+    const stato = pausa ? ` dalle ${fmtOraBreve(dataDa(inCorso.pausa_dal))}`
+      : fermi >= MINUTI_AVVISO ? ` · <span class="errore">nessuna serie da ${fmtMinuti(fermi * 60)}</span>` : '';
+    html += `<div class="card in-corso ${pausa ? 'in-pausa' : ''}"><div class="tenue">${pausa ? 'Sessione in pausa' : 'Sessione in corso'}${stato}</div>
+      <div style="font-size:17px;font-weight:500;margin:2px 0 8px">${esc(inCorso.titolo)} · ${fmtMinuti(durataSessione(inCorso))} di allenamento</div>
+      <button class="btn largo" data-azione="riprendi">${pausa ? ic('play') + ' Riprendi l\'allenamento' : 'Torna alla sessione'}</button></div>`;
   }
   // La settimana in corso: giorni allenati e sedute fatte (su previste, se i modelli hanno una frequenza).
   const lun = lunedi(new Date());
@@ -835,6 +900,13 @@ function disegnaOggi() {
       const k = chiaveGiorno(g);
       return `<span class="${giorniFatti.has(k) ? 'si' : ''} ${k === chiaveGiorno(new Date()) ? 'oggi' : ''}">${n}</span>`;
     }).join('')}</div></div>`;
+  // Diario di oggi: solo lo stato, nessun obbligo di «completo».
+  if (vociDiario().length) {
+    const st = statoDiario(oggiG());
+    html += `<button class="card modello dv-oggi" data-azione="apri-diario">
+      <span class="fila"><span style="font-size:16px;font-weight:500">${ic('notebook')} Diario di oggi</span>${ic('chevron-right')}</span>
+      <span class="tenue" style="display:block;margin-top:4px">${st.fatte} ${st.fatte === 1 ? 'voce' : 'voci'} su ${st.totali} compilate${st.ultima ? ' · ultima modifica ' + esc(st.ultima.slice(11, 16)) : ''}</span></button>`;
+  }
   html += `<button class="btn2 largo" data-azione="nuova-vuota">${ic('plus')} Sessione vuota</button>`;
   let cartella = null;
   const modelli = modelliOrdinati();
@@ -963,16 +1035,24 @@ function disegnaSessione() {
     <button style="background:none;border:none;text-align:left;padding:0;min-height:48px;cursor:pointer" data-azione="rinomina-sessione">
       <div class="tenue">${esc(sess.titolo)} ${aperta ? '' : '· ' + fmtGiorno(dataDa(sess.inizio))} ${ic('edit')}</div>
       <div style="font-size:22px;font-weight:500" id="cronometro"></div></button>
-    ${aperta ? `<button class="btn verde" data-azione="fine-sessione">Fine</button>` : `<button class="btn2" data-azione="chiudi-sessione">Chiudi</button>`}
+    ${aperta ? `<span style="display:flex;gap:8px">${inPausa(sess) ? '' : `<button class="btn2" data-azione="pausa" aria-label="Metti in pausa">${ic('pause')} Pausa</button>`}
+      <button class="btn verde" data-azione="fine-sessione">Fine</button></span>` : `<button class="btn2" data-azione="chiudi-sessione">Chiudi</button>`}
   </div><div class="pila">`;
-  // Sessione aperta da più di 4 ore: probabilmente ci si è dimenticati di premere «Fine».
-  const ore = (Date.now() - (dataDa(sess.inizio) || new Date())) / 3600e3;
-  if (aperta && ore > 4) {
+  // In pausa: il cronometro è fermo, il timer di recupero spento e lo schermo può spegnersi.
+  if (inPausa(sess)) {
+    html += `<div class="card pausa-card"><b>${ic('pause')} In pausa dalle ${fmtOraBreve(dataDa(sess.pausa_dal))}</b>
+      <p class="tenue" style="margin:4px 0 10px">Il tempo di pausa non conta nella durata. Puoi chiudere l'app e tornare quando vuoi.</p>
+      <button class="btn largo" data-azione="riprendi-pausa">${ic('play')} Riprendi l'allenamento</button></div>`;
+  }
+  // 30 minuti senza serie: forse hai finito e non hai premuto «Fine».
+  const fermi = minutiFermi(sess);
+  if (fermi >= MINUTI_AVVISO && S.avvisoIgnorato !== sess.id + '|' + ultimaAttivita(sess)) {
     const ultima = oraUltimaSerie(sess);
-    html += `<div class="card avviso-card"><b>Sessione aperta da ${fmtMinuti(ore * 3600)}</b>
-      <p class="tenue" style="margin:4px 0 10px">Forse ti sei dimenticato di premere «Fine».</p>
-      <div class="riga-btn">${ultima ? `<button class="btn" data-azione="fine-a" data-valore="${esc(ultima)}">Chiudi alle ${esc(ultima.slice(11, 16))}</button>` : ''}
-        <button class="btn2" data-azione="rinomina-sessione">Correggi gli orari</button></div></div>`;
+    html += `<div class="card avviso-card" id="avviso-fermo"><b>Nessuna serie da ${fmtMinuti(fermi * 60)}</b>
+      <p class="tenue" style="margin:4px 0 10px">Hai finito? Puoi chiudere la sessione all'ora dell'ultima serie, o metterla in pausa.</p>
+      ${ultima ? `<button class="btn largo" style="margin-bottom:8px" data-azione="fine-a" data-valore="${esc(ultima)}">Chiudi alle ${esc(ultima.slice(11, 16))}</button>` : ''}
+      <div class="riga-btn"><button class="btn2" data-azione="pausa-da" data-valore="${esc(ultimaAttivita(sess))}">${ic('pause')} Pausa</button>
+        <button class="btn2" data-azione="ignora-fermo">Continuo</button></div></div>`;
   }
   const esercizi = eserciziDi(sess.id);
   html += `<div class="blocchi pila">${disegnaBlocchi(esercizi, (se, lettera) => disegnaEsercizioSessione(sess, se, lettera))}</div>`;
@@ -986,6 +1066,24 @@ function disegnaSessione() {
     <button class="btn2 pericolo largo" data-azione="elimina-sessione">${ic('trash')} ${aperta ? 'Annulla la sessione' : 'Elimina la sessione'}</button>
     <div class="stato-sync" data-stato-sync>${testoStatoSync()}</div></div>`;
   return html;
+}
+
+/* Ogni 30 secondi: se l'avviso «nessuna serie da 30 minuti» deve comparire (o sparire), si ridisegna.
+ * Mai durante un trascinamento o mentre si scrive. */
+function controllaAvvisoFermo() {
+  const sess = sessioneInCorso();
+  if (!sess) return;
+  const chiave = sess.id + '|' + ultimaAttivita(sess);
+  const serve = minutiFermi(sess) >= MINUTI_AVVISO && S.avvisoIgnorato !== chiave;
+  // Vibrazione e suono una sola volta per ogni pausa lunga, e solo con l'app davanti
+  // (se l'app non è in vista, Chrome la ferma: suonerebbe in ritardo al ritorno).
+  if (serve && S.avvisoSuonato !== chiave && document.visibilityState === 'visible') {
+    S.avvisoSuonato = chiave;
+    suona();
+    if (S.schermata !== 'sessione') mostraAvviso(`Nessuna serie da ${MINUTI_AVVISO} minuti: hai finito?`, () => vai('sessione', { sessioneId: sess.id }), 'Apri', 10000);
+  }
+  if (S.schermata !== 'sessione' || S.sessioneId !== sess.id || trascina || presa || S.compatto || !$('#velo').hidden) return;
+  if (serve !== !!$('#avviso-fermo')) ridisegnaSePossibile();
 }
 
 // Ora dell'ultima serie spuntata di una sessione («AAAA-MM-GG HH:mm:ss»), oppure '' se nessuna.
@@ -1002,9 +1100,7 @@ function aggiornaCronometro() {
   if (!el) return;
   const sess = riga('Sessioni', S.sessioneId);
   if (!sess) return;
-  const inizio = dataDa(sess.inizio);
-  const fine = sess.fine ? dataDa(sess.fine) : new Date();
-  el.textContent = inizio ? fmtDurata((fine - inizio) / 1000) : '';
+  el.textContent = fmtDurata(durataSessione(sess)) + (inPausa(sess) ? ' · in pausa' : '');
 }
 
 /* ---------- Storico ---------- */
@@ -1596,6 +1692,190 @@ function leggiFormTest() {
   ['dx', 'sx'].forEach(lato => ['valore', 'dolore', 'nota'].forEach(c => { b[lato][c] = $(`#t-${lato}-${c}`).value; }));
 }
 
+/* ======================= Diario (guidato dal foglio) =======================
+ * Le voci NON sono scritte qui: si leggono dalla scheda DiarioCampi (attivo = sì, ordinate per «ordine»,
+ * raggruppate per «sezione»). Le risposte vanno in DiarioValori (id «DV-giorno-voce»), i farmaci si leggono
+ * da Farmaci e le assunzioni vanno in DiarioFarmaci (id «DF-giorno-farmaco»). Nessuna soglia, nessun giudizio. */
+
+// «sì» scritto in modi diversi nel foglio (sì, si, Sì, true…).
+function siVero(v) { return ['si', 'yes', 'true', '1', 'x'].includes(semplifica(v)); }
+function oggiG() { return ora().slice(0, 10); }
+function vociDiario() {
+  return vivi('DiarioCampi').filter(c => siVero(c.attivo))
+    .sort((a, b) => (num(a.ordine) || 0) - (num(b.ordine) || 0) || String(a.id).localeCompare(String(b.id)));
+}
+// Un farmaco è «in elenco» per un giorno se dal <= giorno <= al (al vuoto = senza fine).
+function farmaciDel(g) {
+  return vivi('Farmaci').filter(f => {
+    const dal = normalizzaData(f.dal, 'giorno'), al = normalizzaData(f.al, 'giorno');
+    return (!dal || dal <= g) && (!al || g <= al);
+  }).sort(perNome);
+}
+const idValore = (g, campoId) => `DV-${g}-${campoId}`;
+const idFarmaco = (g, farmacoId) => `DF-${g}-${farmacoId}`;
+function valoreDiario(g, campoId) { const r = riga('DiarioValori', idValore(g, campoId)); return r && r.eliminato !== SI ? r : null; }
+function rigaFarmaco(g, farmacoId) { const r = riga('DiarioFarmaci', idFarmaco(g, farmacoId)); return r && r.eliminato !== SI ? r : null; }
+function haValore(r) { return !!r && r.valore !== '' && r.valore != null; }
+
+/** Salva il valore e/o la nota di una voce. Se valore e nota restano vuoti, la riga è segnata eliminata (vuoto ≠ 0). */
+async function salvaValoreDiario(g, campo, cambi) {
+  const id = idValore(g, campo.id);
+  const esistente = riga('DiarioValori', id);
+  const r = esistente || nuovaRiga('DiarioValori', { id, giorno: g, campo_id: campo.id });
+  if ('valore' in cambi) r.valore = cambi.valore;
+  if ('nota' in cambi) r.nota = cambi.nota;
+  const vuota = (r.valore === '' || r.valore == null) && !String(r.nota || '').trim();
+  if (vuota && (!esistente || esistente.eliminato === SI)) return; // mai creata o già vuota: nessuna riga inutile
+  r.giorno = g;
+  // Copia leggibile «sezione – etichetta», anche se la voce cambia nome (una sola volta se sono uguali).
+  const sez = String(campo.sezione || '').trim(), et = String(campo.etichetta || '').trim();
+  r.campo_etichetta = sez && et && sez !== et ? `${sez} – ${et}` : (et || sez);
+  r.eliminato = vuota ? SI : NO;
+  await salva(['DiarioValori', r]);
+}
+
+/** Assunzioni di un farmaco: la riga nasce al primo tocco; «prese» resta tra 0 e le previste. */
+async function salvaFarmaco(g, f, cambi) {
+  const id = idFarmaco(g, f.id);
+  const r = riga('DiarioFarmaci', id) || nuovaRiga('DiarioFarmaci', { id, giorno: g, farmaco_id: f.id, prese: 0, nota: '' });
+  const previste = num(f.previste_al_giorno);
+  r.farmaco_nome = f.nome;
+  r.previste = isNaN(previste) ? '' : previste;
+  if ('delta' in cambi) {
+    const max = isNaN(previste) || previste <= 0 ? Infinity : previste;
+    r.prese = Math.max(0, Math.min(max, (num(r.prese) || 0) + cambi.delta));
+  }
+  if ('nota' in cambi) r.nota = cambi.nota;
+  r.eliminato = NO;
+  await salva(['DiarioFarmaci', r]);
+}
+
+/** «x voci su y»: voci di tipo scala, sino ed elenco con un valore, più i farmaci del giorno presi almeno una volta. */
+function statoDiario(g) {
+  const voci = vociDiario().filter(c => ['scala', 'sino', 'elenco'].includes(semplifica(c.tipo)));
+  const farmaci = vociDiario().some(c => semplifica(c.tipo) === 'farmaci') ? farmaciDel(g) : [];
+  const fatte = voci.filter(c => haValore(valoreDiario(g, c.id))).length + farmaci.filter(f => (num((rigaFarmaco(g, f.id) || {}).prese) || 0) >= 1).length;
+  let ultima = '';
+  vivi('DiarioValori').concat(vivi('DiarioFarmaci')).forEach(r => { if (normalizzaData(r.giorno, 'giorno') === g && String(r.aggiornato_il) > ultima) ultima = String(r.aggiornato_il); });
+  return { fatte, totali: voci.length + farmaci.length, ultima };
+}
+
+function fmtGiornoDiario(g) {
+  const d = giornoDa(g);
+  if (!d) return esc(g);
+  const testo = d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+  if (g === oggiG()) return 'oggi, ' + testo;
+  const ieri = new Date(giornoDa(oggiG()) - 864e5);
+  return (chiaveGiorno(ieri) === g ? 'ieri, ' : '') + testo + (d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : '');
+}
+
+function controlloVoce(g, c) {
+  const tipo = semplifica(c.tipo);
+  const r = valoreDiario(g, c.id);
+  const v = r ? r.valore : '';
+  const attr = `data-campo="${esc(c.id)}"`;
+  if (tipo === 'scala') {
+    let min = num(c.scala_min), max = num(c.scala_max);
+    if (isNaN(min)) min = 0;
+    if (isNaN(max)) max = 10;
+    if (max - min <= 10) {
+      let bottoni = '';
+      for (let n = min; n <= max; n++) bottoni += `<button class="dv-num ${String(v) === String(n) ? 'si' : ''}" data-azione="dv-scelta" ${attr} data-valore="${n}">${n}</button>`;
+      return `<div class="dv-scala">${bottoni}</div>`;
+    }
+    // Scala ampia: cursore con il numero grande, e un tasto per toglierlo.
+    return `<div class="dv-cursore"><b>${v === '' ? '–' : numH(v)}</b>
+      <input type="range" min="${min}" max="${max}" step="1" value="${v === '' ? Math.round((min + max) / 2) : esc(v)}" data-dv-range ${attr} aria-label="${esc(c.etichetta)}">
+      ${v === '' ? '' : `<button class="scelta" data-azione="dv-scelta" ${attr} data-valore="${esc(v)}">Togli</button>`}</div>`;
+  }
+  if (tipo === 'sino') {
+    return `<div class="dv-scelte">${[['sì', 'Sì'], ['no', 'No']].map(([val, t]) =>
+      `<button class="scelta ${semplifica(v) === semplifica(val) && v !== '' ? 'si' : ''}" data-azione="dv-scelta" ${attr} data-valore="${val}">${t}</button>`).join('')}</div>`;
+  }
+  if (tipo === 'elenco') {
+    const opzioni = String(c.opzioni || '').split(';').map(x => x.trim()).filter(Boolean);
+    return `<div class="dv-scelte">${opzioni.map(o =>
+      `<button class="scelta ${String(v) === o ? 'si' : ''}" data-azione="dv-scelta" ${attr} data-valore="${esc(o)}">${esc(o)}</button>`).join('') || '<span class="tenue">Nessuna opzione nel foglio.</span>'}</div>`;
+  }
+  if (tipo === 'testo') {
+    return `<textarea class="testo" rows="3" placeholder="scrivi qui…" data-dv-campo ${attr} data-parte="valore">${esc(v)}</textarea>`;
+  }
+  if (tipo === 'farmaci') {
+    const farmaci = farmaciDel(g);
+    if (!farmaci.length) return `<p class="tenue" style="margin:0">Nessun farmaco in elenco per questo giorno.</p>`;
+    return farmaci.map(f => {
+      const rf = rigaFarmaco(g, f.id);
+      const prese = rf ? num(rf.prese) || 0 : 0;
+      const previste = num(f.previste_al_giorno);
+      const completo = !isNaN(previste) && previste > 0 && prese >= previste;
+      return `<div class="dv-farmaco">
+        <div class="fila"><span><span style="display:block">${esc(f.nome)}</span><span class="tenue">${esc(f.dose_testo)}</span></span>
+          <span class="dv-contatore ${completo ? 'fatto' : ''}">
+            <button class="dv-cbtn" data-azione="df-meno" data-farmaco="${esc(f.id)}" aria-label="Togli un'assunzione di ${esc(f.nome)}">−</button>
+            <b>${prese}${isNaN(previste) ? '' : ' / ' + previste}</b>
+            <button class="dv-cbtn" data-azione="df-piu" data-farmaco="${esc(f.id)}" aria-label="Aggiungi un'assunzione di ${esc(f.nome)}">+</button></span></div>
+        <input class="testo" placeholder="nota (facoltativa)" data-df-nota data-farmaco="${esc(f.id)}" value="${esc(rf ? rf.nota : '')}">
+      </div>`;
+    }).join('');
+  }
+  return `<p class="tenue" style="margin:0">Tipo non supportato: aggiorna l'app.</p>`;
+}
+
+function disegnaDiario() {
+  const g = S.giornoDiario || oggiG();
+  let html = testata('Diario');
+  const voci = vociDiario();
+  if (!voci.length) {
+    let msg;
+    if (meta.versionePonte && meta.versionePonte < PONTE_DIARIO) msg = `Per il Diario serve il ponte aggiornato (versione ${PONTE_DIARIO}). Oggi è la versione ${esc(meta.versionePonte)}: ripubblica <b>Code.gs</b> come spiegato nel README.`;
+    else if (!meta.diarioScaricato) msg = 'Le voci del diario non sono ancora state scaricate dal foglio. Collegati a internet e riapri l\'app.';
+    else msg = 'Nella scheda DiarioCampi del foglio non c\'è nessuna voce attiva.';
+    return html + `<div class="vuoto-msg">${msg}</div>`;
+  }
+  const st = statoDiario(g);
+  html += `<div class="pila">
+    <div class="dv-giorno">
+      <button class="icona" data-azione="giorno-diario" data-valore="-1" aria-label="Giorno prima">${ic('arrow-left')}</button>
+      <label class="dv-data"><span>${fmtGiornoDiario(g)}</span><input type="date" id="diario-data" max="${oggiG()}" value="${g}" aria-label="Scegli il giorno"></label>
+      <button class="icona" data-azione="giorno-diario" data-valore="1" aria-label="Giorno dopo" ${g >= oggiG() ? 'disabled' : ''} style="transform:scaleX(-1)">${ic('arrow-left')}</button>
+    </div>
+    <p class="tenue" style="margin:0 4px">${st.fatte} ${st.fatte === 1 ? 'voce' : 'voci'} su ${st.totali} compilate${st.ultima ? ' · ultima modifica ' + esc(st.ultima.slice(11, 16)) : ''} · si salva da solo</p>`;
+  let sezione = null, aperta = false;
+  voci.forEach(c => {
+    if (!aperta || c.sezione !== sezione) {
+      if (aperta) html += `</div>`;
+      sezione = c.sezione;
+      html += `${sezione ? `<div class="sez-diario">${esc(sezione)}</div>` : ''}<div class="card dv-card">`;
+      aperta = true;
+    }
+    const r = valoreDiario(g, c.id);
+    html += `<div class="dv-voce">
+      ${c.etichetta && c.etichetta !== c.sezione ? `<div class="dv-etichetta">${esc(c.etichetta)}</div>` : ''}
+      ${c.aiuto ? `<div class="tenue dv-aiuto">${esc(c.aiuto)}</div>` : ''}
+      ${controlloVoce(g, c)}
+      ${siVero(c.ha_nota) ? `<input class="testo dv-nota" placeholder="nota breve" data-dv-campo data-campo="${esc(c.id)}" data-parte="nota" value="${esc(r ? r.nota : '')}">` : ''}
+    </div>`;
+  });
+  if (aperta) html += `</div>`;
+  html += disegnaAllenamentoDelGiorno(g);
+  return html + `</div>`;
+}
+
+/* Sola lettura: i valori registrati durante l'allenamento quel giorno (pienezza, dolore, malleolo, Achille). */
+function disegnaAllenamentoDelGiorno(g) {
+  const righe = [];
+  vivi('Sessioni').filter(s => normalizzaData(s.inizio).slice(0, 10) === g).forEach(sess => {
+    eserciziDi(sess.id).forEach(se => {
+      const es = riga('Esercizi', se.esercizio_id);
+      const valori = Object.values(RIAB).flatMap(a => a.campi).filter(([c]) => se[c] !== '' && se[c] != null || se[c + '_nota'])
+        .map(([c, nome]) => `${nome.toLowerCase()} <b>${se[c] !== '' && se[c] != null ? numH(se[c]) : '–'}</b>${se[c + '_nota'] ? ` <span class="tenue">«${esc(se[c + '_nota'])}»</span>` : ''}`);
+      if (valori.length) righe.push(`<div class="dv-sola">${esc(es ? es.nome : 'Esercizio')} · ${valori.join(' · ')}</div>`);
+    });
+  });
+  return `<div class="sez-diario" style="color:var(--tenue)">Durante l'allenamento (sola lettura)</div>
+    <div class="card">${righe.join('') || '<p class="tenue" style="margin:0">Nessun valore registrato durante l\'allenamento in questo giorno.</p>'}</div>`;
+}
+
 /* ---------- Impostazioni ---------- */
 function disegnaImpostazioni() {
   return testata('Impostazioni', 'torna-oggi') + `<div class="pila">
@@ -1637,7 +1917,7 @@ function disegnaImpostazioni() {
     <div class="card">
       <h2>Versione</h2>
       <p class="tenue" style="margin:8px 0">Gym · versione <b>${VERSIONE_APP}</b> · unità di peso: kg<br>
-        Ponte (Code.gs): ${meta.versionePonte ? `versione <b>${esc(meta.versionePonte)}</b>${meta.versionePonte < 2 ? ' · <span class="errore">da aggiornare</span>' : ''}` : 'non ancora letto'}<br>
+        Ponte (Code.gs): ${meta.versionePonte ? `versione <b>${esc(meta.versionePonte)}</b>${meta.versionePonte < PONTE_DIARIO ? ' · <span class="errore">da aggiornare</span>' : ''}` : 'non ancora letto'}<br>
         Schema del foglio: ${meta.versioneSchema ? `versione ${esc(meta.versioneSchema)}${meta.versioneSchema !== '1' ? ' · <span class="errore">diversa da quella che l\'app conosce (1)</span>' : ''}` : '–'}</p>
       <button class="btn2 largo" data-azione="cerca-aggiornamenti">Cerca aggiornamenti</button>
     </div>
@@ -2128,6 +2408,11 @@ async function modelloDaSessione(sess) {
 
 async function chiudiSessione(fine) {
   const sess = riga('Sessioni', S.sessioneId);
+  // Se era in pausa, la sessione finisce quando è iniziata la pausa (il tempo in pausa non conta).
+  if (inPausa(sess)) {
+    if (normalizzaData(sess.pausa_dal) < fine) fine = normalizzaData(sess.pausa_dal);
+    sess.pausa_dal = '';
+  }
   sess.fine = fine;
   await salva(['Sessioni', sess]);
   chiudiFoglio(); fermaTimer(); tieniAcceso(false);
@@ -2185,7 +2470,33 @@ const AZIONI = {
   'torna-oggi': () => vai('oggi'),
   'torna-esercizi': () => vai('esercizi', { vistaArchivio: 'esercizi' }),
   'torna-modelli': () => vai('esercizi', { vistaArchivio: 'modelli' }),
-  'riprendi': () => { chiudiFoglio(); const s = sessioneInCorso(); if (s) { vai('sessione', { sessioneId: s.id }); controllaWakeLock(); } },
+  'riprendi': async () => {
+    chiudiFoglio();
+    const s = sessioneInCorso();
+    if (!s) return;
+    if (inPausa(s)) { await riprendiSessione(s); mostraAvviso('Allenamento ripreso'); }
+    vai('sessione', { sessioneId: s.id }); controllaWakeLock();
+  },
+  'pausa': async () => {
+    await mettiInPausa(riga('Sessioni', S.sessioneId));
+    disegna(); mostraAvviso('Sessione in pausa');
+  },
+  // Pausa che parte dall'ultima attività: i minuti passati fermi non contano nella durata.
+  'pausa-da': async el => {
+    const sess = riga('Sessioni', S.sessioneId);
+    await mettiInPausa(sess);
+    if (el.dataset.valore && el.dataset.valore < sess.pausa_dal) { sess.pausa_dal = el.dataset.valore; await salva(['Sessioni', sess]); }
+    disegna(); mostraAvviso('Sessione in pausa');
+  },
+  'riprendi-pausa': async () => {
+    await riprendiSessione(riga('Sessioni', S.sessioneId));
+    disegna(); mostraAvviso('Allenamento ripreso');
+  },
+  'ignora-fermo': () => {
+    const sess = riga('Sessioni', S.sessioneId);
+    S.avvisoIgnorato = sess.id + '|' + ultimaAttivita(sess); // ricompare dopo altri 30 minuti senza serie
+    disegna();
+  },
   'nuova-vuota': async () => {
     if (sessioneInCorso()) return avvisoSessioneGiaAperta();
     const sess = nuovaRiga('Sessioni', { id: nuovoId('SE'), titolo: 'Allenamento', modello_id: '', inizio: ora(), fine: '' });
@@ -2238,7 +2549,7 @@ const AZIONI = {
       const es = riga('Esercizi', se.esercizio_id);
       return es && RIAB[es.area] && RIAB[es.area].campi.every(([c]) => se[c] === '' || se[c] == null);
     });
-    const ultima = r.durata > 4 * 3600 ? oraUltimaSerie(sess) : '';
+    const ultima = minutiFermi(sess) >= MINUTI_AVVISO ? oraUltimaSerie(sess) : '';
     apriFoglio(`<h2>Fine della sessione</h2>
       <div class="riepilogo" style="margin:14px 0"><div><b>${fmtMinuti(r.durata)}</b><span class="tenue">durata</span></div>
         <div><b>${r.fatte}</b><span class="tenue">serie fatte</span></div><div><b>${r.volume ? fmtKg(r.volume) : '—'}</b><span class="tenue">volume</span></div></div>
@@ -2246,8 +2557,12 @@ const AZIONI = {
       ${senzaRiab.length ? `<div class="card avviso-card" style="margin-bottom:10px"><b>Riabilitazione da compilare</b>
         <p class="tenue" style="margin:4px 0 8px">${senzaRiab.map(se => esc(nomeVoce('SessioniEsercizi', se))).join(', ')}</p>
         <button class="btn2 largo" data-azione="vai-riab" data-id="${esc(senzaRiab[0].id)}">Compila adesso</button></div>` : ''}
-      ${ultima ? `<button class="btn2 largo" style="margin-bottom:8px" data-azione="fine-a" data-valore="${esc(ultima)}">Salva con fine alle ${esc(ultima.slice(11, 16))} (ultima serie)</button>` : ''}
-      <div class="riga-btn"><button class="btn2" data-azione="chiudi-foglio">Continua</button><button class="btn verde" data-azione="conferma-fine">Salva</button></div>`);
+      ${ultima
+        // Fermo da almeno 30 minuti: «Salva» chiude all'ora dell'ultima serie; «Salva adesso» usa l'ora attuale.
+        ? `<p class="tenue">Nessuna serie da ${fmtMinuti(minutiFermi(sess) * 60)}: la sessione finisce alle ${esc(ultima.slice(11, 16))}, l'ora dell'ultima serie.</p>
+          <button class="btn verde largo" style="margin-bottom:8px" data-azione="fine-a" data-valore="${esc(ultima)}">Salva (fine alle ${esc(ultima.slice(11, 16))})</button>
+          <div class="riga-btn"><button class="btn2" data-azione="chiudi-foglio">Continua</button><button class="btn2" data-azione="conferma-fine">Salva adesso</button></div>`
+        : `<div class="riga-btn"><button class="btn2" data-azione="chiudi-foglio">Continua</button><button class="btn verde" data-azione="conferma-fine">Salva</button></div>`}`);
   },
   'vai-riab': el => {
     chiudiFoglio();
@@ -2306,6 +2621,30 @@ const AZIONI = {
     if (r) r.classList.toggle('fatta', s.fatta === SI);
   },
   'espandi-es': el => { S.aperti.add(el.dataset.id); disegna(); },
+
+  /* --- Diario --- */
+  'apri-diario': () => vai('diario', { giornoDiario: oggiG() }),
+  'giorno-diario': el => {
+    const d = giornoDa(S.giornoDiario || oggiG());
+    d.setDate(d.getDate() + Number(el.dataset.valore));
+    const g = chiaveGiorno(d);
+    if (g > oggiG()) return;
+    S.giornoDiario = g; history.replaceState(statoAttuale(), ''); disegna();
+  },
+  // Tocco su un numero, su Sì/No o su un'opzione; toccare di nuovo la scelta la toglie (vuoto, mai 0).
+  'dv-scelta': async el => {
+    const g = S.giornoDiario || oggiG();
+    const campo = riga('DiarioCampi', el.dataset.campo);
+    if (!campo) return;
+    const attuale = valoreDiario(g, campo.id);
+    const scala = semplifica(campo.tipo) === 'scala';
+    const nuovo = scala ? Number(el.dataset.valore) : el.dataset.valore;
+    const uguale = attuale && haValore(attuale) && semplifica(attuale.valore) === semplifica(nuovo);
+    await salvaValoreDiario(g, campo, { valore: uguale ? '' : nuovo });
+    disegna();
+  },
+  'df-piu': async el => { const f = riga('Farmaci', el.dataset.farmaco); if (f) { await salvaFarmaco(S.giornoDiario || oggiG(), f, { delta: 1 }); disegna(); } },
+  'df-meno': async el => { const f = riga('Farmaci', el.dataset.farmaco); if (f) { await salvaFarmaco(S.giornoDiario || oggiG(), f, { delta: -1 }); disegna(); } },
   'ripeti-sessione': async () => {
     if (sessioneInCorso()) return avvisoSessioneGiaAperta();
     const nuova = await ripetiSessione(riga('Sessioni', S.sessioneId));
@@ -2592,6 +2931,7 @@ const AZIONI = {
     await salvaMeta('url', url);
     if (token) await salvaMeta('token', token);
     await salvaMeta('cursore', ''); // nuovo ponte: si rilegge tutto
+    await salvaMeta('diarioScaricato', '');
     $('#imp-esito').textContent = 'Salvato.';
     sincronizza({ completo: true });
   },
@@ -2641,6 +2981,13 @@ const AZIONI = {
 
 /* Scelta del file CSV di Strong. */
 document.addEventListener('change', async e => {
+  // Diario: giorno scelto dal calendario del telefono (mai nel futuro).
+  if (e.target.id === 'diario-data') {
+    const g = normalizzaData(e.target.value, 'giorno');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(g) && g <= oggiG()) { S.giornoDiario = g; history.replaceState(statoAttuale(), ''); }
+    disegna();
+    return;
+  }
   if (e.target.id !== 'file-strong' || !e.target.files.length) return;
   try {
     const testo = await e.target.files[0].text();
@@ -2797,6 +3144,23 @@ document.addEventListener('input', async e => {
     await salva(['Modelli', m]);
     return;
   }
+  // Diario: testo libero e note delle voci, nota dei farmaci, cursore delle scale ampie. Si salva a ogni lettera.
+  if ('dvCampo' in el.dataset) {
+    const campo = riga('DiarioCampi', el.dataset.campo);
+    if (campo) await salvaValoreDiario(S.giornoDiario || oggiG(), campo, { [el.dataset.parte]: el.value });
+    return;
+  }
+  if ('dvRange' in el.dataset) {
+    const campo = riga('DiarioCampi', el.dataset.campo);
+    const b = el.parentNode.querySelector('b'); if (b) b.textContent = el.value;
+    if (campo) await salvaValoreDiario(S.giornoDiario || oggiG(), campo, { valore: Number(el.value) });
+    return;
+  }
+  if ('dfNota' in el.dataset) {
+    const f = riga('Farmaci', el.dataset.farmaco);
+    if (f) await salvaFarmaco(S.giornoDiario || oggiG(), f, { nota: el.value });
+    return;
+  }
   if (el.dataset.sessCampo) {
     const sess = riga('Sessioni', S.sessioneId);
     sess[el.dataset.sessCampo] = el.value;
@@ -2824,6 +3188,7 @@ async function avvio() {
   aggiornaTimer();
   setInterval(() => { aggiornaTimer(); aggiornaCronometro(); if (conto) disegnaConto(); }, 250);
   setInterval(() => sincronizza(), 120000);
+  setInterval(controllaAvvisoFermo, 30000);
   window.addEventListener('online', () => sincronizza());
   window.addEventListener('offline', () => aggiornaStatoSync());
   document.addEventListener('visibilitychange', () => {

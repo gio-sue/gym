@@ -11,13 +11,20 @@
  *
  * Versione 2 (08/11/2026): date lette in qualsiasi formato e restituite come AAAA-MM-GG;
  * aggiornamenti scritti a gruppi di righe vicine (molto più veloce).
+ * Versione 3 (08/11/2026): colonne della pausa in Sessioni (pausa_s numero, pausa_dal data e ora).
+ * Versione 4 (09/11/2026): schede del Diario (DiarioCampi, Farmaci in sola lettura; DiarioValori,
+ * DiarioFarmaci in lettura e scrittura). La colonna «valore» prende il formato cella per cella:
+ * un numero resta numero, un testo resta testo (così «1/2» non diventa una data).
  */
 
 var FUSO = 'Europe/Rome';
-var VERSIONE_PONTE = 2;
+var VERSIONE_PONTE = 4;
 
 // Colonne con date o orari: «ora» = AAAA-MM-GG HH:mm:ss, «giorno» = AAAA-MM-GG.
-var COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', data: 'giorno' };
+var COLONNE_DATA = { aggiornato_il: 'ora', inizio: 'ora', fine: 'ora', pausa_dal: 'ora', data: 'giorno', giorno: 'giorno', dal: 'giorno', al: 'giorno' };
+
+// Schede che l'app legge soltanto: un eventuale invio viene ignorato (non rifiutato, per non bloccare la coda).
+var SOLO_LETTURA = ['DiarioCampi', 'Farmaci'];
 
 /**
  * Riporta una data al formato dell'app, qualunque sia il modo in cui è finita nel foglio:
@@ -39,12 +46,20 @@ function normalizzaData(valore, testo, genere) {
 
 // Le schede che l'app può leggere e scrivere. «Leggimi» non si tocca mai.
 var SCHEDE = ['Esercizi', 'Modelli', 'ModelliEsercizi', 'ModelliSerie', 'Sessioni',
-  'SessioniEsercizi', 'Serie', 'Test', 'Impostazioni'];
+  'SessioniEsercizi', 'Serie', 'Test', 'Impostazioni',
+  'DiarioCampi', 'Farmaci', 'DiarioValori', 'DiarioFarmaci'];
 
 // Colonne che contengono numeri veri (tutte le altre sono testo, formato @).
+// «valore» può essere numero o testo (Test, DiarioValori): il formato si decide cella per cella.
 var COLONNE_NUMERICHE = ['recupero_s', 'ordine', 'posizione', 'peso_kg', 'rip', 'durata_s',
   'rpe', 'rpe_previsto', 'ginocchio_pienezza', 'ginocchio_dolore', 'malleolo_dolore',
-  'achille_dolore', 'valore', 'dolore', 'sedute_settimana'];
+  'achille_dolore', 'valore', 'dolore', 'sedute_settimana', 'pausa_s',
+  'scala_min', 'scala_max', 'previste_al_giorno', 'previste', 'prese'];
+
+/** Formato di una cella da scrivere: numero vero → «General», tutto il resto → testo «@». */
+function formatoCella(nomeScheda, colonna, valoreScritto) {
+  return eNumerica(nomeScheda, colonna) && typeof valoreScritto === 'number' ? 'General' : '@';
+}
 
 // In «Impostazioni» la chiave è «chiave» e il valore resta testo.
 function chiaveDi(nomeScheda) {
@@ -125,7 +140,7 @@ function valoreDaScrivere(nomeScheda, colonna, valore) {
     if (valore === '') return '';
     var n = typeof valore === 'number' ? valore : Number(String(valore).replace(',', '.'));
     if (isNaN(n)) {
-      if (colonna === 'valore') return String(valore); // Test: valore testuale ammesso
+      if (colonna === 'valore') return String(valore); // Test e Diario: valore testuale ammesso («sì», testo libero…)
       throw new Error('numero non valido in ' + nomeScheda + '.' + colonna);
     }
     return n;
@@ -167,6 +182,10 @@ function push(corpo) {
     var scritte = 0, ignorate = 0;
     Object.keys(pacchetto).forEach(function (nome) {
       if (SCHEDE.indexOf(nome) === -1) throw new Error('scheda non ammessa: ' + nome);
+      if (SOLO_LETTURA.indexOf(nome) !== -1) { // l'app non le scrive mai: si ignora senza errore
+        ignorate += Array.isArray(pacchetto[nome]) ? pacchetto[nome].length : 0;
+        return;
+      }
       var esito = scriviScheda(nome, pacchetto[nome]);
       scritte += esito.scritte;
       ignorate += esito.ignorate;
@@ -187,9 +206,10 @@ function scriviScheda(nome, righe) {
   var iAgg = s.intestazioni.indexOf('aggiornato_il');
   if (iChiave === -1) throw new Error('colonna ' + chiave + ' mancante in ' + nome);
   var larghezza = s.intestazioni.length;
-  var formati = s.intestazioni.map(function (col) {
-    return col && eNumerica(nome, col) ? 'General' : '@';
-  });
+  // Formati di una riga nuova: cella per cella, secondo il valore che ci va.
+  function formatiDi(riga) {
+    return riga.map(function (v, c) { return s.intestazioni[c] ? formatoCella(nome, s.intestazioni[c], v) : '@'; });
+  }
 
   var posizione = {}; // id -> indice nella matrice (0 = riga 2 del foglio)
   s.testi.forEach(function (riga, i) { if (riga[iChiave] !== '') posizione[riga[iChiave]] = i; });
@@ -212,7 +232,7 @@ function scriviScheda(nome, righe) {
       s.intestazioni.forEach(function (col, c) {
         if (col && Object.prototype.hasOwnProperty.call(inArrivo, col)) {
           riga[c] = valoreDaScrivere(nome, col, inArrivo[col]);
-          formatiRiga[c] = formati[c];
+          formatiRiga[c] = formatoCella(nome, col, riga[c]);
         }
       });
       s.valori[i] = riga;
@@ -247,7 +267,7 @@ function scriviScheda(nome, righe) {
   if (nuove.length) {
     var primaLibera = s.foglio.getLastRow() + 1;
     var area = s.foglio.getRange(primaLibera, 1, nuove.length, larghezza);
-    area.setNumberFormats(nuove.map(function () { return formati; }));
+    area.setNumberFormats(nuove.map(function (n) { return formatiDi(n.riga); }));
     area.setValues(nuove.map(function (n) { return n.riga; }));
     scritte += nuove.length;
   }

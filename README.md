@@ -100,6 +100,18 @@ Il token resta solo nel telefono. Se cancelli i dati di Chrome o reinstalli l'ap
 
 Se lo rifai con lo stesso file, le sessioni già importate vengono saltate. Il CSV non va caricato su GitHub.
 
+## Aggiornare il ponte senza cambiare indirizzo
+
+Quando ricevi un `apps-script/Code.gs` nuovo (per esempio la versione 4, per il Diario):
+
+1. Apri il foglio «App allenamento – Dati» → **Estensioni → Apps Script**.
+2. Nel file `Code.gs` (o `Codice.gs`): seleziona tutto (Ctrl+A), cancella, incolla il testo nuovo. Premi l'icona del dischetto **Salva progetto**.
+3. In alto a destra: **Esegui il deployment → Gestisci deployment**. *Non* scegliere «Nuovo deployment»: creerebbe un indirizzo diverso.
+4. Nella finestra c'è il deployment attivo («Gym»): clicca la **matita** (Modifica).
+5. In **Versione** scegli **Nuova versione** (la descrizione è facoltativa, per esempio «Diario»). Non toccare «Esegui come» né «Chi ha accesso».
+6. **Esegui il deployment**. Se Google chiede di autorizzare di nuovo, conferma con il tuo account. L'**URL dell'app web resta lo stesso**: sul telefono non devi cambiare niente.
+7. Sul telefono apri Gym e premi **Impostazioni → Rileggi tutto**. In **Impostazioni → Versione** deve comparire «Ponte (Code.gs): versione 4».
+
 ## Aggiornamenti dell'app
 
 Se tra i file nuovi c'è anche `apps-script/Code.gs`, va rimesso anche nel foglio: incollalo in Apps Script, salva, poi **Esegui il deployment → Gestisci deployment → matita → Versione: Nuova versione → Esegui il deployment**. In **Impostazioni → Versione** dell'app vedi quale versione del ponte stai usando (es. «Ponte (Code.gs): versione 2»).
